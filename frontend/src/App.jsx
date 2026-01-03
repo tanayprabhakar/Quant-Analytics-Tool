@@ -2,6 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import MarketMonitor from './MarketMonitor';
 import SecurityWorkbench from './SecurityWorkbench';
+import Screeners from './Screeners';
+import ResearchLab from './ResearchLab';
+import PortfolioAnalytics from './PortfolioAnalytics';
 
 // 1. API_BASE Resolution
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
@@ -140,7 +143,41 @@ function App() {
     };
 
     // Navigation State
-    const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' or 'inspector'
+    const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'inspector' | 'screeners' | 'research' | 'portfolio'
+
+    const renderContent = () => {
+        switch (activeTab) {
+            case 'monitor':
+                return (
+                    <MarketMonitor onSymbolClick={(symbol) => {
+                        setSelectedSymbol(symbol);
+                        setActiveTab('inspector');
+                    }} />
+                );
+            case 'inspector':
+                return (
+                    <SecurityWorkbench
+                        symbol={selectedSymbol}
+                        onSymbolChange={setSelectedSymbol}
+                    />
+                );
+            case 'screeners':
+                return (
+                    <Screeners
+                        onSymbolClick={(symbol) => {
+                            setSelectedSymbol(symbol);
+                            setActiveTab('inspector');
+                        }}
+                    />
+                );
+            case 'research':
+                return <ResearchLab />;
+            case 'portfolio':
+                return <PortfolioAnalytics />;
+            default:
+                return null;
+        }
+    };
 
     return (
         <div className="min-h-screen font-sans text-zinc-100 p-6 md:p-12 selection:bg-white/20">
@@ -166,6 +203,24 @@ function App() {
                     >
                         Stock Inspector
                     </button>
+                    <button
+                        onClick={() => setActiveTab('screeners')}
+                        className={`px-5 py-2 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'screeners' ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}
+                    >
+                        Screeners
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('research')}
+                        className={`px-5 py-2 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'research' ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}
+                    >
+                        Research Lab
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('portfolio')}
+                        className={`px-5 py-2 rounded-full text-sm font-medium transition-all duration-300 ${activeTab === 'portfolio' ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}
+                    >
+                        Portfolio
+                    </button>
                 </div>
 
                 <div className="flex items-center gap-6">
@@ -189,17 +244,28 @@ function App() {
             </header>
 
             <main className="max-w-7xl mx-auto">
-                {activeTab === 'monitor' ? (
+                {activeTab === 'monitor' && (
                     <MarketMonitor onSymbolClick={(symbol) => {
                         setSelectedSymbol(symbol);
                         setActiveTab('inspector');
                     }} />
-                ) : (
+                )}
+                {activeTab === 'inspector' && (
                     <SecurityWorkbench
                         symbol={selectedSymbol}
                         onSymbolChange={setSelectedSymbol}
                     />
                 )}
+                {activeTab === 'screeners' && (
+                    <Screeners
+                        onSymbolClick={(symbol) => {
+                            setSelectedSymbol(symbol);
+                            setActiveTab('inspector');
+                        }}
+                    />
+                )}
+                {activeTab === 'research' && <ResearchLab />}
+                {activeTab === 'portfolio' && <PortfolioAnalytics />}
             </main>
 
             {/* Backtest Modal */}

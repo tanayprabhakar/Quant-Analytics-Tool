@@ -19,8 +19,8 @@ def get_market_summary(engine: Engine, benchmark_symbol: str = "^NSEI") -> Dict:
             SELECT date, close
             FROM price_daily
             WHERE symbol = :symbol
+            AND date >= current_date - INTERVAL '730 days'
             ORDER BY date ASC
-            LIMIT 500
         """)
         
         with engine.connect() as conn:

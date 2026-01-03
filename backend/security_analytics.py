@@ -5,6 +5,7 @@ import logging
 from sqlalchemy import Engine, text
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +48,25 @@ def get_security_overview(symbol: str, engine: Engine) -> Dict:
     """
     try:
         with engine.connect() as conn:
-            # 1. Fetch Fundamentals (Placeholder - yfinance.info is too slow for real-time)
-            # TODO: Pre-cache fundamentals in a separate table during batch ingestion
-            # For now, use basic placeholder data
-            
-            fundamentals = {
-                "market_cap": 0,
-                "pe_ratio": 0,
-                "sector": "N/A",
-                "eps": 0,
-                "name": symbol.replace(".NS", "")
-            }
+            # 1. Fetch Fundamentals
+            try:
+                info = yf.Ticker(symbol).info
+                fundamentals = {
+                    "market_cap": info.get("marketCap", 0),
+                    "pe_ratio": info.get("trailingPE", 0) or info.get("forwardPE", 0) or 0,
+                    "sector": info.get("sector", "N/A"),
+                    "eps": info.get("trailingEps", 0) or 0,
+                    "name": info.get("shortName", symbol)
+                }
+            except Exception as e:
+                logger.warning(f"Failed to fetch fundamentals for {symbol}: {e}")
+                fundamentals = {
+                    "market_cap": 0,
+                    "pe_ratio": 0,
+                    "sector": "N/A",
+                    "eps": 0,
+                    "name": symbol.replace(".NS", "")
+                }
             
             # 2. Risk Metrics (Based on DB prices)
             # Fetch last 1 year of data for Stock AND Benchmark (^NSEI)
@@ -89,7 +98,6 @@ def get_security_overview(symbol: str, engine: Engine) -> Dict:
             if bench_count < 1200:
                  logger.info(f"Insufficient benchmark data (^NSEI, rows={bench_count}). Fetching...")
                  try:
-                    import yfinance as yf
                     from app import store_prices
                     
                     bench = yf.Ticker("^NSEI")
@@ -112,7 +120,6 @@ def get_security_overview(symbol: str, engine: Engine) -> Dict:
             if stock_count < 1200:
                 logger.info(f"Insufficient data for {symbol} (rows={stock_count}). Fetching from Yahoo...")
                 try:
-                    import yfinance as yf
                     from app import store_prices
                     
                     stk = yf.Ticker(symbol)
@@ -235,7 +242,8 @@ def get_security_overview(symbol: str, engine: Engine) -> Dict:
                     "return_1d": round(float(ret_1d * 100), 2)
                 },
                 "fundamentals": {
-                    "pe": fundamentals.get("pe_ratio", 0),
+                    "market_cap": fundamentals.get("market_cap", 0),
+                    "pe_ratio": fundamentals.get("pe_ratio", 0),
                     "eps": fundamentals.get("eps", 0)
                 },
                 "risk": {
@@ -246,7 +254,7 @@ def get_security_overview(symbol: str, engine: Engine) -> Dict:
                 "factors": {
                     "momentum_30d": round(float(mom_30), 4),
                     "momentum_90d": round(float(mom_90), 4),
-                    "percentile": round(float(rank_90), 1), # Using 90d as primary rank
+                    "momentum_percentile": round(float(rank_90), 1), # Using 90d as primary rank
                     "trend": trend
                 }
             }
@@ -265,7 +273,6 @@ def get_security_performance(symbol: str, engine: Engine) -> Dict:
             FROM price_daily
             WHERE symbol = :symbol
             ORDER BY date ASC
-            LIMIT 500
         """)
         
         with engine.connect() as conn:
@@ -274,7 +281,6 @@ def get_security_performance(symbol: str, engine: Engine) -> Dict:
         if df.empty or len(df) < 1000:
              # Auto-ingest for chart as well (Ensure 5y depth)
              try:
-                import yfinance as yf
                 from app import store_prices
                 
                 stk = yf.Ticker(symbol)

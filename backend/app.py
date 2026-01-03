@@ -46,6 +46,9 @@ from sqlalchemy import create_engine, text
 from backtest_logic import run_backtest_momentum
 from market_analytics import get_market_summary, get_market_breadth, get_leaders_laggards
 from security_analytics import get_security_overview, get_security_performance
+from screener_analytics import get_momentum_screen, get_low_vol_screen, get_value_screen
+from research_analytics import do_backtest
+from portfolio_analytics import analyze_portfolio_request
 
 # 1. Environment & Dependencies
 load_dotenv()
@@ -156,6 +159,40 @@ class MomentumResponse(BaseModel):
     top_n: int
     results: List[MomentumResult]
 
+class ScreenerResult(BaseModel):
+    symbol: str
+    score: float
+    rank: int
+    metrics: Dict[str, Any]
+
+class ScreenerResponse(BaseModel):
+    screener: str
+    as_of: str
+    universe: str
+    results: List[ScreenerResult]
+
+class BacktestRequest(BaseModel):
+    factor: str
+    lookback_days: int = 90
+    top_n: int = 10
+    rebalance: str = "monthly"
+    start: str = "2023-01-01"
+    end: str = "2023-12-31"
+
+class SweepRequest(BaseModel):
+    factor: str
+    lookbacks: List[int]
+    top_n: int = 10
+    start: str = "2023-01-01"
+    end: str = "2023-12-31"
+
+class PortfolioRequest(BaseModel):
+    symbols: List[str]
+    weights: List[float]
+    start: str = "2023-01-01"
+    end: str = "2023-12-31"
+    benchmark: str = "^NSEI"
+
 # 7. Helper Functions (Persistence)
 
 def fetch_prices_from_db(symbol: str, limit: int = 365) -> Optional[pd.DataFrame]:
@@ -215,7 +252,7 @@ def store_prices(df: pd.DataFrame, symbol: str):
         records = []
         for index, row in df.iterrows():
             # Handle index if it's the date
-            date_val = index if isinstance(index, (pd.Timestamp, datetime)) else row.get("Date")
+            date_val = index.date() if isinstance(index, (pd.Timestamp, datetime)) else row.get("Date")
             if not date_val: 
                 # e.g. if reset_index was called before
                 date_val = row.get("Date")
@@ -607,6 +644,131 @@ def backtest_momentum(
         logger.error(f"Backtest internal error: {e}", exc_info=True)
         finish_run(run_id, "failed", err_msg)
         raise HTTPException(status_code=500, detail=f"Backtest error: {err_msg}")
+
+
+
+@app.get("/screeners/{screener_type}", response_model=ScreenerResponse)
+def get_screener(
+    screener_type: str = Path(..., description="Type: momentum, low-vol, value"),
+    lookback_days: int = Query(30, description="Lookback days (for momentum)"),
+    top_n: int = Query(20, description="Top N results")
+):
+    """
+    Get stocks matching specific quantitative criteria.
+    Types:
+    - momentum: High momentum (returns)
+    - low-vol: Low volatility
+    - value: Low P/E (Requires fundamentals ingestion)
+    """
+    logger.info(f"Endpoint accessed: /screeners/{screener_type}")
+    
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+        
+    run_id = start_run(f"screener_{screener_type}")
+    
+    try:
+        if screener_type == "momentum":
+            result = get_momentum_screen(engine, lookback_days, top_n)
+        elif screener_type == "low-vol":
+            result = get_low_vol_screen(engine, top_n)
+        elif screener_type == "value":
+            result = get_value_screen(engine, top_n)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid screener type")
+            
+        if "error" in result:
+             raise Exception(result["error"])
+             
+        finish_run(run_id, "success")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Screener failed: {e}")
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/research/backtest")
+def run_research_backtest(req: BacktestRequest):
+    """
+    Run a full factor backtest simulation.
+    """
+    # Convert request to dict
+    params = req.dict()
+    
+    run_id = start_run(f"backtest_{req.factor}")
+    
+    try:
+        if not engine:
+             raise HTTPException(status_code=503, detail="DB unavailable")
+             
+        result = do_backtest(engine, params)
+        if "error" in result:
+             finish_run(run_id, "failed", result["error"])
+             raise HTTPException(status_code=400, detail=result["error"])
+             
+        result["run_id"] = run_id
+        finish_run(run_id, "success")
+        return result
+    except Exception as e:
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/research/sweep")
+def run_research_sweep(req: SweepRequest):
+    """
+    Run parameter sweep for robustness check.
+    """
+    run_id = start_run(f"sweep_{req.factor}")
+    results = []
+    
+    try:
+        if not engine: raise HTTPException(status_code=503, detail="DB unavailable")
+        
+        for lb in req.lookbacks:
+            params = req.dict()
+            params["lookback_days"] = lb
+            # Remove list param
+            del params["lookbacks"]
+            
+            res = do_backtest(engine, params)
+            if "error" not in res:
+                results.append({
+                    "lookback": lb,
+                    "sharpe": res["summary"]["sharpe"],
+                    "cagr": res["summary"]["cagr"],
+                    "volatility": res["summary"]["volatility"]
+                })
+        
+        finish_run(run_id, "success")
+        return {"results": results}
+    except Exception as e:
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/portfolio/analyze")
+def run_portfolio_analysis(req: PortfolioRequest):
+    """
+    Run institutional-grade portfolio analytics.
+    """
+    params = req.dict()
+    run_id = start_run("portfolio_analysis")
+    
+    try:
+        if not engine: raise HTTPException(status_code=503, detail="DB unavailable")
+        
+        result = analyze_portfolio_request(engine, params)
+        if "error" in result:
+             finish_run(run_id, "failed", result["error"])
+             raise HTTPException(status_code=400, detail=result["error"])
+             
+        # Log details to runs? (Optional, maybe input payload)
+        # We just finish run
+        finish_run(run_id, "success")
+        return result
+    except Exception as e:
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 9. Market Monitor Endpoints
 

@@ -49,7 +49,7 @@ def store_prices(df: pd.DataFrame, symbol: str):
     try:
         records = []
         for index, row in df.iterrows():
-            date_val = index if isinstance(index, pd.Timestamp) else row.get("Date")
+            date_val = index.date() if isinstance(index, pd.Timestamp) else row.get("Date")
             
             records.append({
                 "symbol": symbol,
