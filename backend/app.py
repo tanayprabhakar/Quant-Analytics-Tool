@@ -44,6 +44,8 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
 from backtest_logic import run_backtest_momentum
+from market_analytics import get_market_summary, get_market_breadth, get_leaders_laggards
+from security_analytics import get_security_overview, get_security_performance
 
 # 1. Environment & Dependencies
 load_dotenv()
@@ -111,7 +113,7 @@ app = FastAPI(title="College OpenBB India API")
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change this to specific domains for production
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -605,6 +607,95 @@ def backtest_momentum(
         logger.error(f"Backtest internal error: {e}", exc_info=True)
         finish_run(run_id, "failed", err_msg)
         raise HTTPException(status_code=500, detail=f"Backtest error: {err_msg}")
+
+# 9. Market Monitor Endpoints
+
+@app.get("/market/summary")
+def market_summary(as_of: Optional[str] = None):
+    """
+    Market Summary: Returns, Volatility for Benchmark (^NSEI)
+    """
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+    return get_market_summary(engine)
+
+@app.get("/market/breadth")
+def market_breadth(as_of: Optional[str] = None):
+    """
+    Market Breadth: Advancers, Decliners, DMA stats.
+    """
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+    return get_market_breadth(engine)
+
+@app.get("/market/leaders")
+def market_leaders(as_of: Optional[str] = None):
+    """
+    Leaders & Laggards: Top 5 gainers/losers.
+    """
+    if not engine:
+         raise HTTPException(status_code=503, detail="DB unavailable")
+    return get_leaders_laggards(engine)
+
+# 10. Security Workbench Endpoints
+
+# ... Existing code ...
+
+@app.get("/market/tickers")
+def get_tickers():
+    """
+    Get list of tickers for the search dropdown.
+    """
+    try:
+        if not os.path.exists(UNIVERSE_PATH):
+            return []
+        
+        df = pd.read_csv(UNIVERSE_PATH)
+        # Ensure Symbol column exists
+        if "Symbol" not in df.columns:
+            return []
+            
+        tickers = []
+        for _, row in df.iterrows():
+            sym = row["Symbol"]
+            if pd.isna(sym): continue
+            
+            # Simple cleanup
+            clean_sym = str(sym).strip()
+            # Try to create a nice label (requires fundamental name which we might not have in CSV)
+            # For now, just return the symbol. The Frontend can pretty it up if needed, or we fetch names later.
+            # Actually, user wants "Actual Name". 
+            # We don't have names in universe.csv, only symbols. 
+            # We can't fetch 50 names from Yahoo in real-time.
+            # We will return just the symbol for now, but formatted nicely.
+            
+            tickers.append({
+                "value": clean_sym,
+                "label": clean_sym.replace(".NS", "")
+            })
+            
+        return tickers
+    except Exception as e:
+        logger.error(f"Error fetching tickers: {e}")
+        return []
+
+@app.get("/security/overview/{symbol}")
+def security_overview(symbol: str):
+    """
+    Get comprehensive security overview (Fundamentals, Risk, Factors).
+    """
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+    return get_security_overview(symbol, engine)
+
+@app.get("/security/performance/{symbol}")
+def security_performance(symbol: str):
+    """
+    Get price history and overlays for charting.
+    """
+    if not engine:
+         raise HTTPException(status_code=503, detail="DB unavailable")
+    return get_security_performance(symbol, engine)
 
 
 if __name__ == "__main__":
