@@ -9,7 +9,7 @@ Environment Variables:
 - DATABASE_URL: Postgres Connection String
 
 Security Note:
-- Do not store Supabase service key in frontend — only server side.
+- Do not store database credentials in frontend — only server side.
 
 Test Commands:
 --------------
@@ -415,6 +415,27 @@ def get_history(
             
             # Formatting for response
             df = df.reset_index()
+        else:
+            # CHECK STALENESS
+            last_date_in_db = pd.to_datetime(df["Date"]).max().date()
+            today = datetime.now().date()
+            # If older than 2 days (to be safe for weekends/holidays, though 1 day is ideal for active market)
+            # Let's say: if last_date < (today - 1 day), we consider it stale and fetch update.
+            # Example: Today is Monday. Last date in DB is Friday. Delta = 3 days. We need fresh? No, market closed.
+            # But simplistic check: if delta > 1, fetch just in case. yfinance handles market holidays (returns empty for closed days).
+            if (today - last_date_in_db).days > 1:
+                logger.info(f"Data for {symbol} is stale (Last: {last_date_in_db}). Fetching fresh from Yahoo.")
+                data_source = "yahoo (update)"
+                ticker = yf.Ticker(symbol)
+                # Fetch only recent data to append? Or overwrite? 
+                # Simplest is robust fetch of period again.
+                df_new = ticker.history(period=period, interval=interval)
+                
+                if not df_new.empty:
+                    store_prices(df_new, symbol)
+                    # Merge new data with old to ensure we have full set, or just use new if it covers period.
+                    # Since we requested 'period', df_new should have what we want.
+                    df = df_new.reset_index()
 
         # Formatting (applies to both DB and Yahoo data sources)
         # Ensure Date is string YYYY-MM-DD
@@ -509,7 +530,8 @@ def get_momentum(
             universe_df = pd.read_csv(UNIVERSE_PATH)
             if universe_df.empty or "Symbol" not in universe_df.columns:
                  raise ValueError("Empty or invalid universe file")
-            tickers = universe_df["Symbol"].tolist()
+            # Deduplicate while preserving order
+            tickers = list(dict.fromkeys(universe_df["Symbol"].tolist()))
         except Exception as e:
             raise HTTPException(status_code=400, detail="universe is empty or invalid")
 
@@ -526,15 +548,26 @@ def get_momentum(
                 df = fetch_prices_from_db(ticker)
                 
                 # If insufficient data in DB (simple check: is it empty or very short?), fetch Yahoo
-                if df is None or len(df) < lookback_days:
+                # Also check STALENESS
+                is_stale = False
+                if df is not None and not df.empty:
+                    last_date = pd.to_datetime(df["Date"]).max().date()
+                    if (datetime.now().date() - last_date).days > 1:
+                        is_stale = True
+
+                if df is None or len(df) < lookback_days or is_stale:
                      # Fetch from Yahoo
+                     # If it was stale, we might want just the update, but simpler to fetch period logic
+                     # We use download_period (lookback + 5) which is short enough to be fast
                      df_yahoo = yf.download(ticker, period=download_period, interval="1d", progress=False, threads=False)
                      if not df_yahoo.empty:
                          # Store for next time
                          store_prices(df_yahoo, ticker)
                          # Use this dataframe
                          df = df_yahoo
-                         # Normalize columns if needed (yfinance MultiIndex handled below)
+                         # Normalize columns if needed (yfinance MultiIndex handled below) looks like we rely on below logic
+                         df = df.reset_index() # yf.download returns Date index usually
+
                 
                 if df is None or df.empty or len(df) < lookback_days:
                     continue

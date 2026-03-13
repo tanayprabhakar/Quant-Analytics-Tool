@@ -1,4 +1,5 @@
 
+
 import pandas as pd
 import numpy as np
 import logging
@@ -44,6 +45,30 @@ def get_market_summary(engine: Engine, benchmark_symbol: str = "^NSEI") -> Dict:
                         df = pd.read_sql(query, conn, params={"symbol": benchmark_symbol})
             except Exception as e:
                 logger.error(f"Failed to ingest benchmark {benchmark_symbol}: {e}")
+        
+        # Check Staleness for Benchmark
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"]) # Ensure type here for check
+            last_date = df["date"].max().date()
+            today = datetime.now().date()
+            
+            if (today - last_date).days > 1:
+                try:
+                    import yfinance as yf
+                    from app import store_prices
+                    
+                    logger.info(f"Benchmark {benchmark_symbol} is stale (Last: {last_date}). Fetching update...")
+                    ticker = yf.Ticker(benchmark_symbol)
+                    # Fetch efficient update
+                    history = ticker.history(period="1mo", interval="1d")
+                    
+                    if not history.empty:
+                        store_prices(history, benchmark_symbol)
+                        # Re-fetch or append? Re-fetch ensures full range logic below works
+                        with engine.connect() as conn:
+                             df = pd.read_sql(query, conn, params={"symbol": benchmark_symbol})
+                except Exception as e:
+                    logger.error(f"Failed to update stale benchmark {benchmark_symbol}: {e}")
 
         if df.empty:
             return {
