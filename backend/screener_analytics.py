@@ -2,6 +2,8 @@
 import pandas as pd
 import numpy as np
 import logging
+import os
+import yfinance as yf
 from sqlalchemy import Engine, text
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -134,10 +136,71 @@ def get_low_vol_screen(engine: Engine, top_n: int = 20) -> Dict:
         logger.error(f"LowVol Screen Error: {e}")
         return {"error": str(e), "results": []}
 
+
+def _auto_ingest_fundamentals(engine: Engine):
+    """
+    Auto-fetch fundamentals from Yahoo Finance for all universe stocks
+    when the fundamentals_snapshot table is empty.
+    """
+    logger.info("Value Screener: No fundamental data found. Auto-ingesting from Yahoo Finance...")
+    
+    # Find universe CSV
+    universe_path = os.getenv("UNIVERSE_PATH", "../universe.csv")
+    for candidate in [universe_path, "./universe.csv", "../universe.csv"]:
+        if os.path.exists(candidate):
+            universe_path = candidate
+            break
+    else:
+        logger.error("Cannot find universe.csv for auto-ingestion")
+        return False
+    
+    universe = pd.read_csv(universe_path)
+    if "Symbol" not in universe.columns:
+        return False
+    
+    symbols = universe["Symbol"].dropna().unique().tolist()
+    today = datetime.now().date()
+    success = 0
+    
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            
+            mcap = info.get("marketCap")
+            pe = info.get("trailingPE")
+            eps = info.get("trailingEps")
+            sector = info.get("sector")
+            
+            query = text("""
+                INSERT INTO fundamentals_snapshot (symbol, as_of_date, market_cap, pe_ratio, eps, sector)
+                VALUES (:symbol, :date, :mcap, :pe, :eps, :sector)
+                ON CONFLICT (symbol, as_of_date) DO UPDATE
+                SET market_cap = EXCLUDED.market_cap,
+                    pe_ratio = EXCLUDED.pe_ratio,
+                    eps = EXCLUDED.eps,
+                    sector = EXCLUDED.sector,
+                    created_at = now()
+            """)
+            
+            with engine.begin() as conn:
+                conn.execute(query, {
+                    "symbol": symbol, "date": today,
+                    "mcap": mcap, "pe": pe, "eps": eps, "sector": sector
+                })
+            success += 1
+            
+        except Exception as e:
+            logger.warning(f"Auto-ingest failed for {symbol}: {e}")
+    
+    logger.info(f"Auto-ingested fundamentals for {success}/{len(symbols)} stocks")
+    return success > 0
+
+
 def get_value_screen(engine: Engine, top_n: int = 20) -> Dict:
     """
     Lowest Valuation Stocks (P/E Ratio).
-    Uses fundamentals_snapshot table.
+    Uses fundamentals_snapshot table. Auto-ingests if empty.
     """
     try:
         # Fetch latest snapshot
@@ -157,7 +220,13 @@ def get_value_screen(engine: Engine, top_n: int = 20) -> Dict:
             df = pd.read_sql(query, conn, params={"top_n": top_n})
             
         if df.empty:
-            return {"screener": "value", "error": "No fundamental data found (Run Ingestion)", "results": []}
+            # Auto-ingest and retry
+            if _auto_ingest_fundamentals(engine):
+                with engine.connect() as conn:
+                    df = pd.read_sql(query, conn, params={"top_n": top_n})
+            
+            if df.empty:
+                return {"screener": "value", "error": "No fundamental data available", "results": []}
             
         as_of = df["as_of_date"].iloc[0].strftime("%d-%m-%Y")
         
@@ -185,3 +254,4 @@ def get_value_screen(engine: Engine, top_n: int = 20) -> Dict:
     except Exception as e:
         logger.error(f"Value Screen Error: {e}")
         return {"error": str(e), "results": []}
+

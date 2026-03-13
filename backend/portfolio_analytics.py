@@ -1,6 +1,7 @@
 
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
 import logging
@@ -10,18 +11,70 @@ logger = logging.getLogger(__name__)
 class PortfolioEngine:
     def __init__(self, engine):
         self.engine = engine
-        
+
+    def _ensure_prices(self, symbols, start_date, end_date):
+        """Auto-fetch and store missing price data from Yahoo Finance."""
+        all_symbols = list(set(symbols))
+        query_start = pd.to_datetime(start_date) - timedelta(days=10)
+
+        for symbol in all_symbols:
+            try:
+                # Check if we have data for this symbol in the date range
+                check_query = text("""
+                    SELECT COUNT(*) FROM price_daily
+                    WHERE symbol = :symbol AND date >= :start AND date <= :end
+                """)
+                with self.engine.connect() as conn:
+                    count = conn.execute(check_query, {
+                        "symbol": symbol, "start": query_start, "end": end_date
+                    }).scalar()
+
+                if count and count > 10:
+                    continue  # Sufficient data exists
+
+                # Fetch from Yahoo Finance
+                logger.info(f"Portfolio: Auto-fetching {symbol} from Yahoo Finance...")
+                ticker = yf.Ticker(symbol)
+                hist = ticker.history(start=query_start, end=pd.to_datetime(end_date) + timedelta(days=1))
+
+                if hist.empty:
+                    logger.warning(f"No Yahoo data for {symbol}")
+                    continue
+
+                # Store in DB
+                records = []
+                for idx, row in hist.iterrows():
+                    records.append({
+                        "symbol": symbol,
+                        "date": idx.date(),
+                        "open": float(row.get("Open", 0)),
+                        "high": float(row.get("High", 0)),
+                        "low": float(row.get("Low", 0)),
+                        "close": float(row.get("Close", 0)),
+                        "volume": int(row.get("Volume", 0))
+                    })
+
+                if records:
+                    insert_q = text("""
+                        INSERT INTO price_daily (symbol, date, open, high, low, close, volume)
+                        VALUES (:symbol, :date, :open, :high, :low, :close, :volume)
+                        ON CONFLICT (symbol, date) DO NOTHING
+                    """)
+                    with self.engine.begin() as conn:
+                        conn.execute(insert_q, records)
+                    logger.info(f"Portfolio: Stored {len(records)} records for {symbol}")
+
+            except Exception as e:
+                logger.error(f"Portfolio: Failed to fetch {symbol}: {e}")
+
     def fetch_data(self, symbols, benchmark_symbol, start_date, end_date):
         """Fetch daily prices for all requested symbols + benchmark."""
         all_symbols = list(set(symbols + [benchmark_symbol]))
+
+        # Auto-fetch any missing data from Yahoo Finance
+        self._ensure_prices(all_symbols, start_date, end_date)
         
         query_start = pd.to_datetime(start_date) - timedelta(days=10) # buffer for returns
-        
-        # Safe query with list expansion
-        # SQLAlchemy requires manual handling for lists in text() often, or use tuple
-        # But pandas read_sql params work well.
-        # Actually simplest to fetch range and filter in pandas if universe is small, 
-        # BUT for scaling, we should filter in SQL.
         
         sym_list = "', '".join(all_symbols)
         query = text(f"""
