@@ -1,49 +1,57 @@
 import React, { useState, useEffect } from 'react';
-import Plot from 'react-plotly.js';
+import { Activity, Zap, BarChart3, Globe, AlertCircle, TrendingUp } from 'lucide-react';
 
-// Reuse API_BASE from App.jsx logic (passed as prop or re-defined)
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
-const GlassCard = ({ children, title, className = "" }) => (
-    <div className={`bg-zinc-900/30 backdrop-blur-xl border border-white/10 rounded-xl p-6 shadow-2xl flex flex-col ${className}`}>
-        {title && <h3 className="text-lg font-medium text-zinc-100 mb-5 pb-3 border-b border-white/5 tracking-tight">{title}</h3>}
-        {children}
+/* ── Helpers ── */
+const regimeColor = (regime) => {
+    if (regime === 'Risk-On') return { bg: 'bg-emerald-500/15', text: 'text-emerald-400', dot: 'bg-emerald-400' };
+    if (regime === 'Risk-Off') return { bg: 'bg-rose-500/15', text: 'text-rose-400', dot: 'bg-rose-400' };
+    return { bg: 'bg-amber-500/15', text: 'text-amber-400', dot: 'bg-amber-400' };
+};
+const pctColor = (v) => v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+const pctSign = (v) => v > 0 ? `+${v}` : `${v}`;
+
+/* ── Shared Panel ── */
+const Panel = ({ children, title, icon: Icon, className = '' }) => (
+    <div className={`bg-zinc-900/50 border border-white/[0.04] rounded-xl flex flex-col ${className}`}>
+        {title && (
+            <div className="flex items-center gap-1.5 px-4 pt-3 pb-2">
+                {Icon && <Icon className="w-3 h-3 text-zinc-600" />}
+                <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-[0.12em]">{title}</span>
+            </div>
+        )}
+        <div className="px-4 pb-3 flex-1">{children}</div>
     </div>
 );
 
-const StatBox = ({ label, value, subValue, color = "text-zinc-100" }) => (
-    <div className="bg-black/20 p-4 rounded-lg border border-white/5 hover:border-white/10 transition-colors">
-        <div className="text-[10px] font-semibold text-zinc-500 uppercase tracking-widest mb-1.5">{label}</div>
-        <div className={`text-2xl font-bold tracking-tight ${color}`}>{value}</div>
-        {subValue && <div className="text-xs text-zinc-500 mt-1">{subValue}</div>}
+/* ── Breadth Bar ── */
+const BreadthBar = ({ label, value, color }) => (
+    <div className="flex items-center gap-3">
+        <span className="text-[10px] font-medium text-zinc-500 w-16 shrink-0">{label}</span>
+        <div className="flex-1 h-1.5 bg-zinc-800/80 rounded-full overflow-hidden">
+            <div className={`h-full ${color} rounded-full transition-all duration-1000`} style={{ width: `${value}%` }} />
+        </div>
+        <span className="text-[11px] font-bold text-zinc-300 w-10 text-right tabular-nums">{value}%</span>
     </div>
 );
 
+/* ── Main Component ── */
 function MarketMonitor({ onSymbolClick }) {
-    const [summary, setSummary] = useState(null);
-    const [breadth, setBreadth] = useState(null);
-    const [leaders, setLeaders] = useState(null);
-    const [momentum, setMomentum] = useState(null);
+    const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
 
     const fetchData = async () => {
-        setLoading(true);
+        setError(null);
         try {
-            const [sumRes, breadthRes, leadRes, momRes] = await Promise.all([
-                fetch(`${API_BASE}/market/summary`),
-                fetch(`${API_BASE}/market/breadth`),
-                fetch(`${API_BASE}/market/leaders`),
-                // Momentum Snapshot: Reuse existing endpoint with 30D lookback
-                fetch(`${API_BASE}/india/factors/momentum?lookback_days=30&top_n=5`)
-            ]);
-
-            setSummary(await sumRes.json());
-            setBreadth(await breadthRes.json());
-            setLeaders(await leadRes.json());
-            setMomentum(await momRes.json());
-
-        } catch (error) {
-            console.error("Error fetching market data:", error);
+            const res = await fetch(`${API_BASE}/market/advanced_monitor`);
+            if (!res.ok) throw new Error(`Server error: ${res.status}`);
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            setData(json);
+        } catch (err) {
+            setError(err.message);
         } finally {
             setLoading(false);
         }
@@ -51,159 +59,197 @@ function MarketMonitor({ onSymbolClick }) {
 
     useEffect(() => {
         fetchData();
+        const t = setInterval(fetchData, 60000);
+        return () => clearInterval(t);
     }, []);
 
-    if (loading) {
-        return (
-            <div className="flex h-96 items-center justify-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-400"></div>
-            </div>
-        );
-    }
+    /* ── Loading ── */
+    if (loading) return (
+        <div className="flex flex-col h-72 items-center justify-center gap-3">
+            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-indigo-500" />
+            <p className="text-zinc-600 text-[10px] font-medium animate-pulse uppercase tracking-widest">
+                Loading Market Structure…
+            </p>
+        </div>
+    );
+
+    /* ── Error / No Data ── */
+    if (error || !data) return (
+        <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-xl text-rose-400 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{error || 'No data received from server'}</span>
+            <button
+                onClick={() => { setLoading(true); fetchData(); }}
+                className="ml-auto px-3 py-1 bg-rose-500/20 hover:bg-rose-500/30 rounded-lg text-rose-300 font-semibold transition-colors"
+            >
+                Retry
+            </button>
+        </div>
+    );
+
+    const { regime, trend, indices = [], breadth = {}, momentum = {}, sectors = [], volatility = {}, leaders = [], laggards = [], as_of, universe_count } = data;
+    const rc = regimeColor(regime);
+    const breadthStats = breadth.stats || {};
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
-            {/* Panel A: Market Summary */}
-            <GlassCard title={`Market Summary (${summary?.benchmark || "NIFTY"})`}>
-                <div className="grid grid-cols-2 gap-4 mb-6">
-                    <StatBox
-                        label="1D Return"
-                        value={summary?.returns["1D"] + "%"}
-                        color={summary?.returns["1D"] >= 0 ? "text-green-400" : "text-red-400"}
-                    />
-                    <StatBox
-                        label="YTD Return"
-                        value={summary?.returns["YTD"] + "%"}
-                        color={summary?.returns["YTD"] >= 0 ? "text-blue-400" : "text-orange-400"}
-                    />
+        <div className="space-y-4">
+
+            {/* ═══ ROW 1: REGIME STRIP ═══ */}
+            <div className={`${rc.bg} border border-white/[0.04] rounded-xl px-5 py-3 flex flex-wrap items-center gap-x-8 gap-y-2`}>
+                <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${rc.dot} animate-pulse`} />
+                    <span className={`text-sm font-bold ${rc.text}`}>{regime}</span>
+                    <span className="text-[10px] text-zinc-500 font-medium">Regime</span>
                 </div>
-
-                <h4 className="text-sm font-medium text-slate-400 mb-3 uppercase">Volatility (Annualized)</h4>
-                <div className="space-y-4">
-                    <div>
-                        <div className="flex justify-between text-sm mb-1">
-                            <span>30-Day Volatility</span>
-                            <span className="text-slate-200">{summary?.volatility["30D"]}</span>
-                        </div>
-                        <div className="h-2 bg-slate-700/50 rounded-full overflow-hidden">
-                            <div className="h-full bg-purple-500/80 rounded-full" style={{ width: `${Math.min(summary?.volatility["30D"] * 100, 100)}%` }}></div>
-                        </div>
-                    </div>
-                    <div>
-                        <div className="flex justify-between text-sm mb-1">
-                            <span>90-Day Volatility</span>
-                            <span className="text-slate-200">{summary?.volatility["90D"]}</span>
-                        </div>
-                        <div className="h-2 bg-slate-700/50 rounded-full overflow-hidden">
-                            <div className="h-full bg-indigo-500/80 rounded-full" style={{ width: `${Math.min(summary?.volatility["90D"] * 100, 100)}%` }}></div>
-                        </div>
-                    </div>
+                <div className="h-4 w-px bg-white/10" />
+                <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-zinc-500 font-medium">Trend</span>
+                    <span className={`text-xs font-bold ${trend === 'Bullish' ? 'text-emerald-400' : 'text-rose-400'}`}>{trend}</span>
                 </div>
-            </GlassCard>
-
-            {/* Panel B: Market Breadth */}
-            <GlassCard title="Market Breadth">
-                <div className="flex items-center justify-center mb-8 mt-2">
-                    <div className="text-center px-6 border-r border-white/10">
-                        <div className="text-3xl font-bold text-green-400">{breadth?.advancers}</div>
-                        <div className="text-xs text-slate-500 uppercase">Advancers</div>
-                    </div>
-                    <div className="text-center px-6">
-                        <div className="text-3xl font-bold text-red-400">{breadth?.decliners}</div>
-                        <div className="text-xs text-slate-500 uppercase">Decliners</div>
-                    </div>
+                <div className="h-4 w-px bg-white/10" />
+                <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-zinc-500 font-medium">Breadth</span>
+                    <span className={`text-xs font-bold ${(breadthStats.pct_above_50 || 0) > 60 ? 'text-emerald-400'
+                            : (breadthStats.pct_above_50 || 0) < 40 ? 'text-rose-400'
+                                : 'text-amber-400'
+                        }`}>
+                        {(breadthStats.pct_above_50 || 0) > 60 ? 'Strong' : (breadthStats.pct_above_50 || 0) < 40 ? 'Weak' : 'Mixed'}
+                    </span>
                 </div>
-
-                <div className="space-y-6">
-                    <div className="bg-white/5 p-4 rounded-xl border border-white/5">
-                        <div className="flex justify-between items-center mb-2">
-                            <span className="text-sm text-slate-300">Stocks &gt; 50-Day MA</span>
-                            <span className="font-bold text-blue-300">{breadth?.percent_above_50dma}%</span>
-                        </div>
-                        <div className="w-full bg-slate-700/50 rounded-full h-2.5">
-                            <div className="bg-blue-500 h-2.5 rounded-full relative transition-all duration-1000" style={{ width: `${breadth?.percent_above_50dma}%` }}>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="bg-white/5 p-4 rounded-xl border border-white/5">
-                        <div className="flex justify-between items-center mb-2">
-                            <span className="text-sm text-slate-300">Positive Momentum (30D)</span>
-                            <span className="font-bold text-teal-300">{breadth?.percent_positive_30d_momentum}%</span>
-                        </div>
-                        <div className="w-full bg-slate-700/50 rounded-full h-2.5">
-                            <div className="bg-teal-500 h-2.5 rounded-full relative transition-all duration-1000" style={{ width: `${breadth?.percent_positive_30d_momentum}%` }}>
-                            </div>
-                        </div>
-                    </div>
+                <div className="h-4 w-px bg-white/10" />
+                <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-zinc-500 font-medium">Volatility</span>
+                    <span className={`text-xs font-bold ${volatility.status === 'Low' ? 'text-emerald-400'
+                            : volatility.status === 'High' ? 'text-rose-400'
+                                : 'text-zinc-300'
+                        }`}>
+                        {volatility.status} ({volatility.value}%)
+                    </span>
                 </div>
-            </GlassCard>
-
-            {/* Panel C: Leaders & Laggards */}
-            <GlassCard title="Leaders & Laggards (1D)" className="md:col-span-2 lg:col-span-1">
-                <div className="grid grid-cols-2 gap-4 h-full">
-                    <div className="bg-green-900/10 rounded-xl p-3 border border-green-500/10">
-                        <h4 className="text-xs font-bold text-green-400 uppercase mb-3">Top Gainers</h4>
-                        <ul className="space-y-2">
-                            {leaders?.gainers.map((stock) => (
-                                <li key={stock.symbol} className="flex justify-between items-center text-sm">
-                                    <span className="text-slate-300 truncate w-24">{stock.symbol.replace('.NS', '')}</span>
-                                    <span className="font-mono text-green-400">+{stock.return_1d}%</span>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                    <div className="bg-red-900/10 rounded-xl p-3 border border-red-500/10">
-                        <h4 className="text-xs font-bold text-red-400 uppercase mb-3">Top Losers</h4>
-                        <ul className="space-y-2">
-                            {leaders?.losers.map((stock) => (
-                                <li key={stock.symbol} className="flex justify-between items-center text-sm">
-                                    <span className="text-slate-300 truncate w-24">{stock.symbol.replace('.NS', '')}</span>
-                                    <span className="font-mono text-red-400">{stock.return_1d}%</span>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
+                <div className="ml-auto text-[9px] text-zinc-600 font-medium tabular-nums">
+                    {universe_count || '—'} stocks · {as_of}
                 </div>
-            </GlassCard>
+            </div>
 
-            {/* Panel D: Momentum Snapshot */}
-            <GlassCard title="Momentum Leaders (30D)" className="md:col-span-2 lg:col-span-1">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                        <thead className="text-xs text-slate-500 uppercase bg-white/5">
-                            <tr>
-                                <th className="px-4 py-3 rounded-l-lg">Symbol</th>
-                                <th className="px-4 py-3 text-right">Score</th>
-                                <th className="px-4 py-3 text-right rounded-r-lg">Price</th>
+            {/* ═══ ROW 2: INDEX TERMINAL + MOVERS ═══ */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                <Panel title="Index Structure" icon={Globe} className="lg:col-span-3">
+                    <table className="w-full text-left">
+                        <thead>
+                            <tr className="text-[9px] text-zinc-600 uppercase tracking-wider border-b border-white/[0.04]">
+                                <th className="pb-2 font-semibold">Index</th>
+                                <th className="pb-2 text-right font-semibold">Price</th>
+                                <th className="pb-2 text-right font-semibold">1D</th>
+                                <th className="pb-2 text-right font-semibold">vs 50D</th>
+                                <th className="pb-2 text-right font-semibold">vs 200D</th>
+                                <th className="pb-2 text-right font-semibold">52W Hi</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            {momentum?.results?.map((item, idx) => (
-                                <tr key={item.symbol} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                                    <td className="px-4 py-3 font-medium text-slate-200">
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-slate-500 text-xs">#{idx + 1}</span>
-                                            <button
-                                                onClick={() => onSymbolClick && onSymbolClick(item.symbol)}
-                                                className="text-slate-200 hover:text-blue-400 transition-colors cursor-pointer"
-                                            >
-                                                {item.symbol.replace('.NS', '')}
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-3 text-right font-mono text-blue-300">
-                                        {(item.momentum * 100).toFixed(1)}%
-                                    </td>
-                                    <td className="px-4 py-3 text-right font-mono text-slate-400">
-                                        {item.latest.toFixed(0)}
+                        <tbody className="divide-y divide-white/[0.03]">
+                            {indices.map(idx => (
+                                <tr key={idx.symbol} className="hover:bg-white/[0.015] transition-colors">
+                                    <td className="py-2.5 text-xs font-semibold text-zinc-300">{idx.name}</td>
+                                    <td className="py-2.5 text-right text-[11px] font-mono text-zinc-400 tabular-nums">{idx.price.toLocaleString()}</td>
+                                    <td className={`py-2.5 text-right text-[11px] font-bold tabular-nums ${pctColor(idx.change_1d)}`}>{pctSign(idx.change_1d)}%</td>
+                                    <td className={`py-2.5 text-right text-[11px] font-medium tabular-nums ${idx.vs_50dma >= 0 ? 'text-indigo-400' : 'text-zinc-500'}`}>{pctSign(idx.vs_50dma)}%</td>
+                                    <td className={`py-2.5 text-right text-[11px] font-medium tabular-nums ${idx.vs_200dma >= 0 ? 'text-purple-400' : 'text-zinc-500'}`}>{pctSign(idx.vs_200dma)}%</td>
+                                    <td className="py-2.5 text-right text-[11px] font-medium tabular-nums text-zinc-500">
+                                        {idx.dist_52w_high === 0
+                                            ? <span className="text-emerald-400 font-bold text-[9px] uppercase">ATH</span>
+                                            : `${idx.dist_52w_high}%`}
                                     </td>
                                 </tr>
                             ))}
                         </tbody>
                     </table>
+                </Panel>
+
+                <Panel title="Top Movers" icon={TrendingUp} className="lg:col-span-2">
+                    <div className="space-y-1.5">
+                        {leaders.slice(0, 4).map(s => (
+                            <button key={s.symbol} onClick={() => onSymbolClick?.(s.symbol)}
+                                className="w-full flex items-center justify-between py-1.5 px-1 rounded-md hover:bg-white/[0.03] transition-colors group">
+                                <span className="text-[11px] font-semibold text-zinc-300 group-hover:text-white">{s.symbol.replace('.NS', '')}</span>
+                                <div className="flex items-center gap-2">
+                                    {s.vol_ratio >= 1.5 && (
+                                        <span className="text-[8px] font-bold text-amber-500/70 bg-amber-500/10 px-1 py-0.5 rounded uppercase">
+                                            {s.vol_ratio}x vol
+                                        </span>
+                                    )}
+                                    <span className="text-[11px] font-bold text-emerald-400 tabular-nums">+{s.return_1d}%</span>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="border-t border-white/[0.04] mt-2 pt-2 space-y-1.5">
+                        {laggards.slice(0, 4).map(s => (
+                            <button key={s.symbol} onClick={() => onSymbolClick?.(s.symbol)}
+                                className="w-full flex items-center justify-between py-1.5 px-1 rounded-md hover:bg-white/[0.03] transition-colors group">
+                                <span className="text-[11px] font-semibold text-zinc-300 group-hover:text-white">{s.symbol.replace('.NS', '')}</span>
+                                <div className="flex items-center gap-2">
+                                    {s.vol_ratio >= 1.5 && (
+                                        <span className="text-[8px] font-bold text-amber-500/70 bg-amber-500/10 px-1 py-0.5 rounded uppercase">
+                                            {s.vol_ratio}x vol
+                                        </span>
+                                    )}
+                                    <span className="text-[11px] font-bold text-rose-400 tabular-nums">{s.return_1d}%</span>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </Panel>
+            </div>
+
+            {/* ═══ ROW 3: BREADTH + MOMENTUM ═══ */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Panel title="Breadth Health" icon={Activity}>
+                    <div className="space-y-3">
+                        <BreadthBar label="20 DMA" value={breadthStats.pct_above_20 || 0} color="bg-indigo-500" />
+                        <BreadthBar label="50 DMA" value={breadthStats.pct_above_50 || 0} color="bg-purple-500" />
+                        <BreadthBar label="200 DMA" value={breadthStats.pct_above_200 || 0} color="bg-emerald-500" />
+                    </div>
+                    <div className="mt-3 pt-2 border-t border-white/[0.04] flex justify-between text-[10px] font-medium text-zinc-500">
+                        <span>A/D Ratio</span>
+                        <span className={(breadth.advancers || 0) >= (breadth.decliners || 0) ? 'text-emerald-400' : 'text-rose-400'}>
+                            {breadth.advancers || 0} / {breadth.decliners || 0}
+                            <span className="text-zinc-600 ml-1">({((breadth.advancers || 0) / ((breadth.decliners || 1))).toFixed(1)}x)</span>
+                        </span>
+                    </div>
+                </Panel>
+
+                <Panel title="Momentum Breadth" icon={Zap}>
+                    <div className="grid grid-cols-2 gap-3 h-full">
+                        <div className="flex flex-col items-center justify-center bg-white/[0.02] rounded-lg border border-white/[0.04] py-4">
+                            <span className="text-2xl font-bold text-zinc-200 tabular-nums">{momentum.pct_positive_30d ?? 0}%</span>
+                            <span className="text-[9px] text-zinc-500 font-semibold uppercase mt-1">Positive 30D</span>
+                        </div>
+                        <div className="flex flex-col items-center justify-center bg-white/[0.02] rounded-lg border border-white/[0.04] py-4">
+                            <span className="text-2xl font-bold text-indigo-400 tabular-nums">{momentum.pct_top_decile ?? 0}%</span>
+                            <span className="text-[9px] text-zinc-500 font-semibold uppercase mt-1">Top Decile</span>
+                        </div>
+                    </div>
+                </Panel>
+            </div>
+
+            {/* ═══ ROW 4: SECTOR ROTATION ═══ */}
+            <Panel title={`Sector Rotation · ${sectors.length} sectors`} icon={BarChart3}>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2">
+                    {sectors.map(s => (
+                        <div key={s.sector}
+                            className="p-2.5 bg-white/[0.015] border border-white/[0.04] rounded-lg hover:border-white/[0.08] transition-all">
+                            <div className="flex items-baseline justify-between mb-1">
+                                <span className="text-[11px] font-semibold text-zinc-300">{s.sector}</span>
+                                <span className="text-[9px] text-zinc-600 tabular-nums">{s.count}</span>
+                            </div>
+                            <div className="flex items-baseline justify-between">
+                                <span className={`text-xs font-bold tabular-nums ${pctColor(s.change_1d)}`}>{pctSign(s.change_1d)}%</span>
+                                <span className={`text-[9px] font-medium tabular-nums ${pctColor(s.change_1w)} opacity-60`}>{pctSign(s.change_1w)}% w</span>
+                            </div>
+                        </div>
+                    ))}
                 </div>
-            </GlassCard>
+            </Panel>
+
         </div>
     );
 }

@@ -44,7 +44,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
 from backtest_logic import run_backtest_momentum
-from market_analytics import get_market_summary, get_market_breadth, get_leaders_laggards
+from market_analytics import get_market_summary, get_market_breadth, get_leaders_laggards, get_advanced_market_monitor
 from security_analytics import get_security_overview, get_security_performance
 from screener_analytics import get_momentum_screen, get_low_vol_screen, get_value_screen
 from research_analytics import do_backtest
@@ -831,6 +831,32 @@ def market_leaders(as_of: Optional[str] = None):
     if not engine:
          raise HTTPException(status_code=503, detail="DB unavailable")
     return get_leaders_laggards(engine)
+
+@app.get("/market/advanced_monitor")
+def get_advanced_monitor():
+    """
+    Get professional-grade market situational awareness data.
+    """
+    logger.info("Endpoint accessed: /market/advanced_monitor")
+    
+    cache_key = "market:advanced:v1"
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return cached_data
+        
+    if not engine:
+        raise HTTPException(status_code=503, detail="Database engine not available")
+    
+    try:
+        result = get_advanced_market_monitor(engine)
+        if "error" in result:
+             raise Exception(result["error"])
+             
+        cache.set(cache_key, result, CACHE_TTL_SEC)
+        return result
+    except Exception as e:
+        logger.error(f"Advanced Monitor Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 10. Security Workbench Endpoints
 

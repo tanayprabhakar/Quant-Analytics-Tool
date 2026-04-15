@@ -8,11 +8,15 @@ in universe.csv to avoid slow on-demand downloads during user sessions.
 Run this script periodically (e.g., daily after market close) to keep data fresh.
 
 Usage:
-    python batch_ingest_universe.py
+    python batch_ingest_universe.py                    # Ingest all (skips already-ingested)
+    python batch_ingest_universe.py --start-from 196   # Resume from symbol #196
+    python batch_ingest_universe.py --force             # Re-ingest everything
 """
 
 import os
 import sys
+import time
+import argparse
 import pandas as pd
 import yfinance as yf
 from sqlalchemy import create_engine, text
@@ -38,6 +42,19 @@ if not DATABASE_URL:
 
 # Create engine
 engine = create_engine(DATABASE_URL)
+
+
+def get_ingested_symbols() -> set:
+    """Get set of symbols that already have data in the database."""
+    try:
+        query = text("SELECT DISTINCT symbol FROM price_daily")
+        with engine.connect() as conn:
+            result = conn.execute(query)
+            return {row[0] for row in result}
+    except Exception as e:
+        logger.error(f"Error checking existing symbols: {e}")
+        return set()
+
 
 def store_prices(df: pd.DataFrame, symbol: str):
     """
@@ -71,12 +88,13 @@ def store_prices(df: pd.DataFrame, symbol: str):
         """)
 
         with engine.begin() as conn:
-            result = conn.execute(query, records)
+            conn.execute(query, records)
             return len(records)
 
     except Exception as e:
         logger.error(f"Error storing prices for {symbol}: {e}")
         return 0
+
 
 def ingest_symbol(symbol: str) -> bool:
     """
@@ -100,10 +118,20 @@ def ingest_symbol(symbol: str) -> bool:
         logger.error(f"✗ {symbol}: Failed - {e}")
         return False
 
+
 def main():
     """
-    Main ingestion routine.
+    Main ingestion routine with resume support.
     """
+    parser = argparse.ArgumentParser(description="Batch ingest universe stock data")
+    parser.add_argument("--start-from", type=int, default=1,
+                        help="Start from symbol number N (1-indexed, matches CSV row)")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-ingest all symbols even if already in DB")
+    parser.add_argument("--delay", type=float, default=0.5,
+                        help="Delay in seconds between Yahoo requests (default: 0.5)")
+    args = parser.parse_args()
+
     start_time = datetime.now()
     
     # Read universe
@@ -116,34 +144,57 @@ def main():
         logger.error("Universe CSV missing 'Symbol' column")
         sys.exit(1)
     
-    symbols = universe["Symbol"].dropna().tolist()
+    # Deduplicate symbols while preserving order
+    symbols = list(dict.fromkeys(universe["Symbol"].dropna().tolist()))
     
     # Add benchmark
     if "^NSEI" not in symbols:
         symbols.append("^NSEI")
     
-    logger.info(f"Starting batch ingestion for {len(symbols)} symbols...")
+    # Get already-ingested symbols to skip
+    existing = set()
+    if not args.force:
+        existing = get_ingested_symbols()
+        if existing:
+            logger.info(f"Found {len(existing)} symbols already in DB (will skip)")
+
+    # Slice from start_from (1-indexed → 0-indexed)
+    start_idx = max(0, args.start_from - 1)
+    symbols_to_process = symbols[start_idx:]
+
+    logger.info(f"Processing symbols {args.start_from} to {len(symbols)} ({len(symbols_to_process)} total)")
     logger.info("=" * 60)
     
-    # Ingest all symbols
     success_count = 0
+    skip_count = 0
     fail_count = 0
     
-    for i, symbol in enumerate(symbols, 1):
+    for i, symbol in enumerate(symbols_to_process, args.start_from):
+        # Skip if already ingested (unless --force)
+        if symbol in existing:
+            logger.info(f"[{i}/{len(symbols)}] ⏭ {symbol} (already in DB)")
+            skip_count += 1
+            continue
+
         logger.info(f"[{i}/{len(symbols)}] Processing {symbol}")
         
         if ingest_symbol(symbol):
             success_count += 1
         else:
             fail_count += 1
+        
+        # Small delay between requests to be nice to Yahoo
+        if i < len(symbols):
+            time.sleep(args.delay)
     
     # Summary
     duration = (datetime.now() - start_time).total_seconds()
     logger.info("=" * 60)
     logger.info(f"Ingestion complete in {duration:.1f}s")
     logger.info(f"✓ Success: {success_count}")
+    logger.info(f"⏭ Skipped: {skip_count}")
     logger.info(f"✗ Failed: {fail_count}")
-    logger.info(f"Total: {len(symbols)}")
+    logger.info(f"Total processed: {success_count + skip_count + fail_count}")
 
 if __name__ == "__main__":
     main()

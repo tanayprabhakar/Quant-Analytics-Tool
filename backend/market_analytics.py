@@ -290,3 +290,258 @@ def get_leaders_laggards(engine: Engine) -> Dict:
     except Exception as e:
         logger.error(f"Error in leaders: {e}")
         return {}
+
+def get_advanced_market_monitor(engine: Engine) -> Dict:
+    """
+    Consolidated analyst-grade market monitor data.
+    Computes: regime, index structure, breadth, sector rotation (from universe),
+    momentum breadth, volatility regime, and leaders/laggards with volume context.
+    """
+    import os
+    try:
+        # ── 0. Load universe with sector mapping ──
+        universe_path = os.getenv("UNIVERSE_PATH", "./universe.csv")
+        for candidate in [universe_path, "../universe.csv", "./universe.csv"]:
+            if os.path.exists(candidate):
+                universe_df = pd.read_csv(candidate)
+                break
+        else:
+            universe_df = pd.DataFrame(columns=["Symbol", "Sector"])
+        
+        universe_symbols = list(dict.fromkeys(universe_df["Symbol"].dropna().tolist()))
+        sector_map = {}
+        if "Sector" in universe_df.columns:
+            sector_map = dict(zip(universe_df["Symbol"], universe_df["Sector"]))
+
+        # ── 1. Fetch Major Indices ──
+        indices = {
+            "NIFTY 50": "^NSEI",
+            "BANK NIFTY": "^NSEBANK",
+            "NIFTY IT": "^CNXIT",
+            "S&P 500": "^GSPC"
+        }
+        
+        index_stats = []
+        nifty_50_df = None
+        
+        for name, sym in indices.items():
+            query = text("""
+                SELECT date, close, high, low
+                FROM price_daily
+                WHERE symbol = :symbol
+                AND date >= current_date - INTERVAL '365 days'
+                ORDER BY date ASC
+            """)
+            with engine.connect() as conn:
+                df = pd.read_sql(query, conn, params={"symbol": sym})
+            
+            if df.empty or (datetime.now().date() - pd.to_datetime(df["date"]).max().date()).days > 1:
+                try:
+                    import yfinance as yf
+                    from app import store_prices
+                    ticker = yf.Ticker(sym)
+                    history = ticker.history(period="1y")
+                    if not history.empty:
+                        store_prices(history, sym)
+                        with engine.connect() as conn:
+                            df = pd.read_sql(query, conn, params={"symbol": sym})
+                except: pass
+
+            if df.empty: continue
+            
+            df["date"] = pd.to_datetime(df["date"])
+            if name == "NIFTY 50": nifty_50_df = df
+            
+            last_price = float(df["close"].iloc[-1])
+            prev_price = float(df["close"].iloc[-2]) if len(df) > 1 else last_price
+            ret_1d = (last_price / prev_price) - 1
+            
+            ma_50 = float(df["close"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else last_price
+            ma_200 = float(df["close"].rolling(200).mean().iloc[-1]) if len(df) >= 200 else last_price
+            
+            high_52w = float(df["high"].max())
+            dist_high = (last_price / high_52w) - 1
+            
+            index_stats.append({
+                "name": name,
+                "symbol": sym,
+                "price": round(last_price, 2),
+                "change_1d": round(ret_1d * 100, 2),
+                "vs_50dma": round(((last_price / ma_50) - 1) * 100, 2),
+                "vs_200dma": round(((last_price / ma_200) - 1) * 100, 2),
+                "dist_52w_high": round(dist_high * 100, 2)
+            })
+
+        # ── 2. Market Breadth & Sector Rotation (single query, universe-only) ──
+        breadth_query = text("""
+            SELECT date, symbol, close, volume
+            FROM price_daily
+            WHERE date >= current_date - INTERVAL '250 days'
+            ORDER BY date ASC
+        """)
+        with engine.connect() as conn:
+            all_df = pd.read_sql(breadth_query, conn)
+        
+        breadth_stats = {"above_20": 0, "above_50": 0, "above_200": 0, "total": 0,
+                         "pct_above_20": 0, "pct_above_50": 0, "pct_above_200": 0}
+        advancers, decliners = 0, 0
+        momentum_breadth = {"pct_positive_30d": 0, "pct_top_decile": 0}
+        sector_results = []
+        leader_vol_map = {}  # symbol -> volume_ratio for leaders context
+        
+        if not all_df.empty:
+            all_df["date"] = pd.to_datetime(all_df["date"])
+            
+            # Filter to universe stocks only (exclude index symbols)
+            stock_symbols = [s for s in universe_symbols if not s.startswith("^")]
+            stock_df = all_df[all_df["symbol"].isin(stock_symbols)]
+            
+            if not stock_df.empty:
+                price_pivot = stock_df.pivot_table(index="date", columns="symbol", values="close").ffill()
+                vol_pivot = stock_df.pivot_table(index="date", columns="symbol", values="volume").fillna(0)
+                
+                if not price_pivot.empty and len(price_pivot) > 1:
+                    current = price_pivot.iloc[-1]
+                    prev = price_pivot.iloc[-2]
+                    valid = current.dropna().index
+                    breadth_stats["total"] = len(valid)
+                    
+                    ma20 = price_pivot.rolling(20).mean().iloc[-1]
+                    ma50 = price_pivot.rolling(50).mean().iloc[-1]
+                    ma200 = price_pivot.rolling(200).mean().iloc[-1]
+                    
+                    # Per-stock returns for sector rotation
+                    ret_1d_all = {}
+                    ret_1w_all = {}
+                    ret_30d_all = {}
+                    
+                    for s in valid:
+                        p = current[s]
+                        pp = prev[s]
+                        if pd.notna(pp) and pp > 0:
+                            if p > pp: advancers += 1
+                            elif p < pp: decliners += 1
+                        if pd.notna(ma20.get(s)) and p > ma20[s]: breadth_stats["above_20"] += 1
+                        if pd.notna(ma50.get(s)) and p > ma50[s]: breadth_stats["above_50"] += 1
+                        if pd.notna(ma200.get(s)) and p > ma200[s]: breadth_stats["above_200"] += 1
+                        
+                        # 1D return
+                        ret_1d_all[s] = ((p / pp) - 1) if pp > 0 else 0
+                        # 1W return (5 trading days back)
+                        if len(price_pivot) > 5:
+                            pw = price_pivot[s].iloc[-6]
+                            ret_1w_all[s] = ((p / pw) - 1) if pd.notna(pw) and pw > 0 else 0
+                        else:
+                            ret_1w_all[s] = 0
+                        # 30D return
+                        if len(price_pivot) > 21:
+                            p30 = price_pivot[s].iloc[-22]
+                            ret_30d_all[s] = ((p / p30) - 1) if pd.notna(p30) and p30 > 0 else 0
+                        else:
+                            ret_30d_all[s] = 0
+                    
+                    total = breadth_stats["total"]
+                    if total > 0:
+                        for k in ["above_20", "above_50", "above_200"]:
+                            breadth_stats[f"pct_{k}"] = round(breadth_stats[k] / total * 100, 1)
+                    
+                    # ── Momentum Breadth (real) ──
+                    positive_30d = sum(1 for v in ret_30d_all.values() if v > 0)
+                    if total > 0:
+                        momentum_breadth["pct_positive_30d"] = round(positive_30d / total * 100, 1)
+                        sorted_mom = sorted(ret_30d_all.values(), reverse=True)
+                        decile_cutoff = len(sorted_mom) // 10
+                        top_decile = sum(1 for v in ret_30d_all.values() if v >= sorted_mom[max(decile_cutoff - 1, 0)])
+                        momentum_breadth["pct_top_decile"] = round(top_decile / total * 100, 1)
+                    
+                    # ── Sector Rotation (from universe Sector column) ──
+                    if sector_map:
+                        sector_groups = {}
+                        for s in valid:
+                            sec = sector_map.get(s)
+                            if sec:
+                                if sec not in sector_groups:
+                                    sector_groups[sec] = {"ret_1d": [], "ret_1w": []}
+                                sector_groups[sec]["ret_1d"].append(ret_1d_all.get(s, 0))
+                                sector_groups[sec]["ret_1w"].append(ret_1w_all.get(s, 0))
+                        
+                        for sec, vals in sector_groups.items():
+                            if len(vals["ret_1d"]) >= 2:  # need at least 2 stocks
+                                sector_results.append({
+                                    "sector": sec,
+                                    "count": len(vals["ret_1d"]),
+                                    "change_1d": round(np.mean(vals["ret_1d"]) * 100, 2),
+                                    "change_1w": round(np.mean(vals["ret_1w"]) * 100, 2)
+                                })
+                        sector_results.sort(key=lambda x: x["change_1d"], reverse=True)
+                    
+                    # ── Volume spike map for leaders/laggards ──
+                    if not vol_pivot.empty and len(vol_pivot) > 20:
+                        vol_current = vol_pivot.iloc[-1]
+                        vol_20d_avg = vol_pivot.tail(20).mean()
+                        for s in valid:
+                            vc = vol_current.get(s, 0)
+                            va = vol_20d_avg.get(s, 1)
+                            if va > 0 and vc > 0:
+                                leader_vol_map[s] = round(vc / va, 1)
+
+        # ── 3. Market Regime ──
+        regime = "Neutral"
+        trend = "Neutral"
+        if nifty_50_df is not None and not nifty_50_df.empty and len(nifty_50_df) > 1:
+            last_nifty = float(nifty_50_df["close"].iloc[-1])
+            nifty_ma200 = float(nifty_50_df["close"].rolling(200).mean().iloc[-1]) if len(nifty_50_df) >= 200 else last_nifty
+            nifty_ret_1d = (last_nifty / float(nifty_50_df["close"].iloc[-2])) - 1
+            
+            trend = "Bullish" if last_nifty > nifty_ma200 else "Bearish"
+            pct50 = breadth_stats.get("pct_above_50", 0)
+            
+            if nifty_ret_1d > 0 and pct50 > 60: regime = "Risk-On"
+            elif nifty_ret_1d < 0 and pct50 < 40: regime = "Risk-Off"
+
+        # ── 4. Volatility Regime ──
+        vol_status = "Normal"
+        vol_value = 0.0
+        if nifty_50_df is not None and len(nifty_50_df) > 20:
+            log_rets = np.log(nifty_50_df["close"] / nifty_50_df["close"].shift(1))
+            vol_20d = float(log_rets.tail(20).std() * np.sqrt(252))
+            vol_200d = float(log_rets.tail(200).std() * np.sqrt(252)) if len(log_rets) > 200 else vol_20d
+            vol_value = round(vol_20d * 100, 1)
+            
+            if vol_20d > vol_200d * 1.2: vol_status = "High"
+            elif vol_20d < vol_200d * 0.8: vol_status = "Low"
+
+        # ── 5. Leaders & Laggards with volume context ──
+        leaders_raw = get_leaders_laggards(engine)
+        gainers = leaders_raw.get("gainers", [])
+        losers = leaders_raw.get("losers", [])
+        
+        for g in gainers:
+            g["vol_ratio"] = leader_vol_map.get(g["symbol"], None)
+        for l in losers:
+            l["vol_ratio"] = leader_vol_map.get(l["symbol"], None)
+
+        
+        return {
+            "as_of": datetime.now().strftime("%d-%m-%Y %H:%M"),
+            "regime": regime,
+            "trend": trend,
+            "universe_count": len(universe_symbols),
+            "indices": index_stats,
+            "breadth": {
+                "advancers": advancers,
+                "decliners": decliners,
+                "stats": breadth_stats
+            },
+            "momentum": momentum_breadth,
+            "sectors": sector_results,
+            "volatility": {
+                "status": vol_status,
+                "value": vol_value
+            },
+            "leaders": gainers,
+            "laggards": losers
+        }
+    except Exception as e:
+        logger.error(f"Error in advanced monitor: {e}", exc_info=True)
+        return {"error": str(e)}
