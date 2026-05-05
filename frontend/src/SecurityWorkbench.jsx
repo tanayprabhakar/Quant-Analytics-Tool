@@ -42,9 +42,12 @@ function SecurityWorkbench({ symbol, onSymbolChange }) {
             .catch(err => console.error('Failed to load ticker list', err));
     }, []);
 
-    const filteredTickers = tickerList.filter(t =>
-        t.label.toLowerCase().includes(searchTerm.toLowerCase())
-    ).slice(0, 8);
+    const filteredTickers = tickerList.filter(t => {
+        const q = searchTerm.toLowerCase();
+        return t.label.toLowerCase().includes(q)
+            || (t.name && t.name.toLowerCase().includes(q))
+            || (t.sector && t.sector.toLowerCase().includes(q));
+    }).slice(0, 10);
 
     // Fetch Data — runs once per symbol change
     useEffect(() => {
@@ -87,31 +90,73 @@ function SecurityWorkbench({ symbol, onSymbolChange }) {
             {/* Row 1: Search + Analyst Header */}
             <div className="flex gap-1.5 flex-shrink-0">
                 {/* Search */}
-                <div className="relative w-64 flex-shrink-0">
-                    <input
-                        type="text"
-                        placeholder="Search Ticker..."
-                        className="w-full bg-zinc-900/40 border border-white/5 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500/50 transition-colors"
-                        value={searchTerm}
-                        onChange={(e) => { setSearchTerm(e.target.value); setShowDropdown(true); }}
-                        onFocus={() => setShowDropdown(true)}
-                        onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
-                        onKeyDown={handleSearch}
-                    />
-                    <span className="absolute right-2.5 top-2.5 text-[9px] text-zinc-600 font-mono">↵</span>
+                <div className="relative w-72 flex-shrink-0">
+                    <div className="relative">
+                        <svg className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-zinc-600 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                        <input
+                            type="text"
+                            placeholder="Search by name or symbol..."
+                            className="w-full bg-zinc-900/40 border border-white/5 rounded-lg pl-8 pr-8 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:bg-zinc-900/60 transition-all"
+                            value={searchTerm}
+                            onChange={(e) => { setSearchTerm(e.target.value); setShowDropdown(true); }}
+                            onFocus={() => setShowDropdown(true)}
+                            onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    if (filteredTickers.length > 0) {
+                                        handleTickerSelect(filteredTickers[0]);
+                                    } else {
+                                        let s = searchTerm.toUpperCase();
+                                        if (!s.endsWith('.NS') && !s.endsWith('.BO') && !s.includes('.')) s += '.NS';
+                                        onSymbolChange(s);
+                                        setShowDropdown(false);
+                                        setSearchTerm('');
+                                    }
+                                }
+                            }}
+                        />
+                        {searchTerm && (
+                            <button
+                                className="absolute right-2 top-2 text-zinc-600 hover:text-zinc-300 transition-colors p-0.5"
+                                onMouseDown={(e) => { e.preventDefault(); setSearchTerm(''); setShowDropdown(false); }}
+                            >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                            </button>
+                        )}
+                    </div>
 
-                    {showDropdown && searchTerm && filteredTickers.length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-1 bg-zinc-900 border border-white/10 rounded-lg shadow-2xl z-50 overflow-hidden">
-                            {filteredTickers.map((ticker) => (
-                                <div
-                                    key={ticker.value}
-                                    className="px-3 py-1.5 text-sm text-zinc-300 hover:bg-white/5 cursor-pointer flex justify-between items-center"
-                                    onClick={() => handleTickerSelect(ticker)}
-                                >
-                                    <span className="font-bold text-xs">{ticker.label}</span>
-                                    <span className="text-[9px] text-zinc-600 bg-black/30 px-1 py-0.5 rounded">NSE</span>
+                    {showDropdown && searchTerm.length > 0 && (
+                        <div className="absolute top-full left-0 right-0 mt-1.5 bg-zinc-900/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl shadow-black/40 z-50 overflow-hidden max-h-80 overflow-y-auto">
+                            {filteredTickers.length > 0 ? (
+                                <>
+                                    <div className="px-3 py-1.5 text-[9px] font-bold text-zinc-600 uppercase tracking-widest border-b border-white/5">
+                                        {filteredTickers.length} result{filteredTickers.length !== 1 ? 's' : ''}
+                                    </div>
+                                    {filteredTickers.map((ticker, i) => (
+                                        <div
+                                            key={ticker.value}
+                                            className={`px-3 py-2 cursor-pointer flex items-center gap-3 transition-colors hover:bg-indigo-500/10 ${i === 0 ? 'bg-white/[0.02]' : ''} border-b border-white/[0.02] last:border-0`}
+                                            onClick={() => handleTickerSelect(ticker)}
+                                        >
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-[11px] font-bold text-zinc-200">{ticker.name}</span>
+                                                </div>
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                    <span className="text-[10px] font-mono font-semibold text-indigo-400/80">{ticker.label}</span>
+                                                    {ticker.sector && <span className="text-[8px] text-zinc-600 bg-white/[0.03] px-1.5 py-0.5 rounded">{ticker.sector}</span>}
+                                                </div>
+                                            </div>
+                                            <span className="text-[8px] text-zinc-700 bg-zinc-800/80 px-1.5 py-0.5 rounded font-bold uppercase shrink-0">NSE</span>
+                                        </div>
+                                    ))}
+                                </>
+                            ) : (
+                                <div className="px-3 py-4 text-center">
+                                    <p className="text-zinc-500 text-xs">No matches found</p>
+                                    <p className="text-zinc-700 text-[10px] mt-0.5">Press Enter to search "{searchTerm.toUpperCase()}"</p>
                                 </div>
-                            ))}
+                            )}
                         </div>
                     )}
                 </div>

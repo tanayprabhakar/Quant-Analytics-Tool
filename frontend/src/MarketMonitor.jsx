@@ -141,7 +141,6 @@ function MarketMonitor({ onSymbolClick }) {
                                 <th className="pb-2 text-right font-semibold">Price</th>
                                 <th className="pb-2 text-right font-semibold">1D</th>
                                 <th className="pb-2 text-right font-semibold">vs 50D</th>
-                                <th className="pb-2 text-right font-semibold">vs 200D</th>
                                 <th className="pb-2 text-right font-semibold">52W Hi</th>
                             </tr>
                         </thead>
@@ -152,7 +151,6 @@ function MarketMonitor({ onSymbolClick }) {
                                     <td className="py-2.5 text-right text-[11px] font-mono text-zinc-400 tabular-nums">{idx.price.toLocaleString()}</td>
                                     <td className={`py-2.5 text-right text-[11px] font-bold tabular-nums ${pctColor(idx.change_1d)}`}>{pctSign(idx.change_1d)}%</td>
                                     <td className={`py-2.5 text-right text-[11px] font-medium tabular-nums ${idx.vs_50dma >= 0 ? 'text-indigo-400' : 'text-zinc-500'}`}>{pctSign(idx.vs_50dma)}%</td>
-                                    <td className={`py-2.5 text-right text-[11px] font-medium tabular-nums ${idx.vs_200dma >= 0 ? 'text-purple-400' : 'text-zinc-500'}`}>{pctSign(idx.vs_200dma)}%</td>
                                     <td className="py-2.5 text-right text-[11px] font-medium tabular-nums text-zinc-500">
                                         {idx.dist_52w_high === 0
                                             ? <span className="text-emerald-400 font-bold text-[9px] uppercase">ATH</span>
@@ -206,7 +204,6 @@ function MarketMonitor({ onSymbolClick }) {
                     <div className="space-y-3">
                         <BreadthBar label="20 DMA" value={breadthStats.pct_above_20 || 0} color="bg-indigo-500" />
                         <BreadthBar label="50 DMA" value={breadthStats.pct_above_50 || 0} color="bg-purple-500" />
-                        <BreadthBar label="200 DMA" value={breadthStats.pct_above_200 || 0} color="bg-emerald-500" />
                     </div>
                     <div className="mt-3 pt-2 border-t border-white/[0.04] flex justify-between text-[10px] font-medium text-zinc-500">
                         <span>A/D Ratio</span>

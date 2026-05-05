@@ -46,7 +46,7 @@ from sqlalchemy import create_engine, text
 from backtest_logic import run_backtest_momentum
 from market_analytics import get_market_summary, get_market_breadth, get_leaders_laggards, get_advanced_market_monitor
 from security_analytics import get_security_overview, get_security_performance
-from screener_analytics import get_momentum_screen, get_low_vol_screen, get_value_screen
+from screener_analytics import get_momentum_screen, get_low_vol_screen, get_value_screen, get_multi_factor_screen
 from research_analytics import do_backtest
 from portfolio_analytics import analyze_portfolio_request
 
@@ -679,6 +679,38 @@ def backtest_momentum(
         raise HTTPException(status_code=500, detail=f"Backtest error: {err_msg}")
 
 
+@app.get("/screeners/multi")
+def get_multi_screener():
+    """
+    Multi-dimensional equity screener.
+    Returns enriched data for all universe stocks.
+    All filtering is client-side.
+    """
+    logger.info("Endpoint accessed: /screeners/multi")
+    
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+    
+    cache_key = "screener:multi:v1"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+    
+    run_id = start_run("screener_multi")
+    
+    try:
+        result = get_multi_factor_screen(engine)
+        if "error" in result:
+            raise Exception(result["error"])
+        
+        cache.set(cache_key, result, CACHE_TTL_SEC)
+        finish_run(run_id, "success")
+        return result
+    except Exception as e:
+        logger.error(f"Multi screener failed: {e}")
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/screeners/{screener_type}", response_model=ScreenerResponse)
 def get_screener(
@@ -860,39 +892,155 @@ def get_advanced_monitor():
 
 # 10. Security Workbench Endpoints
 
-# ... Existing code ...
-
 @app.get("/market/tickers")
 def get_tickers():
     """
-    Get list of tickers for the search dropdown.
+    Get list of tickers with company names for the search dropdown.
     """
+    # Static name mapping — avoids Yahoo API calls
+    NAMES = {
+        "RELIANCE.NS": "Reliance Industries", "TCS.NS": "Tata Consultancy Services",
+        "INFY.NS": "Infosys", "HDFCBANK.NS": "HDFC Bank", "ICICIBANK.NS": "ICICI Bank",
+        "ITC.NS": "ITC Limited", "LT.NS": "Larsen & Toubro", "AXISBANK.NS": "Axis Bank",
+        "BAJFINANCE.NS": "Bajaj Finance", "BAJAJ-AUTO.NS": "Bajaj Auto",
+        "KOTAKBANK.NS": "Kotak Mahindra Bank", "SBIN.NS": "State Bank of India",
+        "HINDUNILVR.NS": "Hindustan Unilever", "BHARTIARTL.NS": "Bharti Airtel",
+        "ULTRACEMCO.NS": "UltraTech Cement", "TITAN.NS": "Titan Company",
+        "MARUTI.NS": "Maruti Suzuki", "JSWSTEEL.NS": "JSW Steel",
+        "SUNPHARMA.NS": "Sun Pharmaceutical", "DRREDDY.NS": "Dr. Reddy's Laboratories",
+        "HCLTECH.NS": "HCL Technologies", "TECHM.NS": "Tech Mahindra",
+        "WIPRO.NS": "Wipro", "EICHERMOT.NS": "Eicher Motors",
+        "DIVISLAB.NS": "Divi's Laboratories", "NESTLEIND.NS": "Nestle India",
+        "ONGC.NS": "Oil & Natural Gas Corp", "NTPC.NS": "NTPC Limited",
+        "POWERGRID.NS": "Power Grid Corp", "TATASTEEL.NS": "Tata Steel",
+        "ADANIPORTS.NS": "Adani Ports & SEZ", "BPCL.NS": "Bharat Petroleum",
+        "COALINDIA.NS": "Coal India", "GRASIM.NS": "Grasim Industries",
+        "HEROMOTOCO.NS": "Hero MotoCorp", "INDUSINDBK.NS": "IndusInd Bank",
+        "BRITANNIA.NS": "Britannia Industries", "SBILIFE.NS": "SBI Life Insurance",
+        "M&M.NS": "Mahindra & Mahindra", "SHREECEM.NS": "Shree Cement",
+        "HINDALCO.NS": "Hindalco Industries", "UPL.NS": "UPL Limited",
+        "HINDZINC.NS": "Hindustan Zinc", "GODREJPROP.NS": "Godrej Properties",
+        "CIPLA.NS": "Cipla", "APOLLOHOSP.NS": "Apollo Hospitals",
+        "ASIANPAINT.NS": "Asian Paints", "ADANIENT.NS": "Adani Enterprises",
+        "TATAMOTORS.NS": "Tata Motors", "HDFCLIFE.NS": "HDFC Life Insurance",
+        "DMART.NS": "Avenue Supermarts (DMart)", "PIDILITIND.NS": "Pidilite Industries",
+        "SBICARD.NS": "SBI Cards & Payment", "ICICIPRU LI.NS": "ICICI Prudential Life",
+        "BAJAJFINSV.NS": "Bajaj Finserv", "NAUKRI.NS": "Info Edge (Naukri)",
+        "BERGEPAINT.NS": "Berger Paints", "DABUR.NS": "Dabur India",
+        "HAVELLS.NS": "Havells India", "SIEMENS.NS": "Siemens India",
+        "ABB.NS": "ABB India", "AMBUJACEM.NS": "Ambuja Cements",
+        "TATACONSUM.NS": "Tata Consumer Products", "VEDL.NS": "Vedanta Limited",
+        "ADANIGREEN.NS": "Adani Green Energy", "ADANIPOWER.NS": "Adani Power",
+        "IOC.NS": "Indian Oil Corp", "GAIL.NS": "GAIL India",
+        "BANKBARODA.NS": "Bank of Baroda", "PNB.NS": "Punjab National Bank",
+        "CANBK.NS": "Canara Bank", "IDFCFIRSTB.NS": "IDFC First Bank",
+        "FEDERALBNK.NS": "Federal Bank", "BANDHANBNK.NS": "Bandhan Bank",
+        "MUTHOOTFIN.NS": "Muthoot Finance", "CHOLAFIN.NS": "Cholamandalam Finance",
+        "MANAPPURAM.NS": "Manappuram Finance", "SHRIRAMFIN.NS": "Shriram Finance",
+        "PEL.NS": "Piramal Enterprises", "LICHSGFIN.NS": "LIC Housing Finance",
+        "RECLTD.NS": "REC Limited", "PFC.NS": "Power Finance Corp",
+        "IRFC.NS": "Indian Railway Finance", "TATAPOWER.NS": "Tata Power",
+        "TORNTPOWER.NS": "Torrent Power", "NHPC.NS": "NHPC Limited",
+        "SJVN.NS": "SJVN Limited", "JSWENERGY.NS": "JSW Energy",
+        "CESC.NS": "CESC Limited", "TRENT.NS": "Trent Limited",
+        "ZOMATO.NS": "Zomato", "PAYTM.NS": "One97 Communications (Paytm)",
+        "POLICYBZR.NS": "PB Fintech (PolicyBazaar)", "NYKAA.NS": "FSN E-Commerce (Nykaa)",
+        "DELHIVERY.NS": "Delhivery", "PHOENIXLTD.NS": "Phoenix Mills",
+        "OBEROIRLTY.NS": "Oberoi Realty", "DLF.NS": "DLF Limited",
+        "PRESTIGE.NS": "Prestige Estates", "BRIGADE.NS": "Brigade Enterprises",
+        "SOBHA.NS": "Sobha Limited", "ACC.NS": "ACC Cement",
+        "RAMCOCEM.NS": "Ramco Cements", "JKCEMENT.NS": "JK Cement",
+        "STARCEMENT.NS": "Star Cement", "DALBHARAT.NS": "Dalmia Bharat",
+        "LUPIN.NS": "Lupin Limited", "AUROPHARMA.NS": "Aurobindo Pharma",
+        "BIOCON.NS": "Biocon", "TORNTPHARM.NS": "Torrent Pharma",
+        "ALKEM.NS": "Alkem Laboratories", "IPCALAB.NS": "IPCA Laboratories",
+        "NATCOPHARMA.NS": "Natco Pharma", "GRANULES.NS": "Granules India",
+        "LAURUSLABS.NS": "Laurus Labs", "LALPATHLAB.NS": "Dr. Lal PathLabs",
+        "METROPOLIS.NS": "Metropolis Healthcare", "FORTIS.NS": "Fortis Healthcare",
+        "MAXHEALTH.NS": "Max Healthcare", "MEDANTA.NS": "Global Health (Medanta)",
+        "LTIM.NS": "LTIMindtree", "MPHASIS.NS": "Mphasis",
+        "COFORGE.NS": "Coforge", "PERSISTENT.NS": "Persistent Systems",
+        "LTTS.NS": "L&T Technology Services", "TATAELXSI.NS": "Tata Elxsi",
+        "ROUTE.NS": "Route Mobile", "KPITTECH.NS": "KPIT Technologies",
+        "ZENSARTECH.NS": "Zensar Technologies", "SONATASOFTW.NS": "Sonata Software",
+        "PIIND.NS": "PI Industries", "SRF.NS": "SRF Limited",
+        "DEEPAKNITRITE.NS": "Deepak Nitrite", "CLEAN.NS": "Clean Science & Technology",
+        "ATUL.NS": "Atul Limited", "AARTIIND.NS": "Aarti Industries",
+        "FLUOROCHEM.NS": "Gujarat Fluorochemicals", "TATACHEM.NS": "Tata Chemicals",
+        "COROMANDEL.NS": "Coromandel International", "HAL.NS": "Hindustan Aeronautics",
+        "BEL.NS": "Bharat Electronics", "BDL.NS": "Bharat Dynamics",
+        "COCHINSHIP.NS": "Cochin Shipyard", "SOLARINDS.NS": "Solar Industries",
+        "MAZDOCK.NS": "Mazagon Dock Shipbuilders", "BHEL.NS": "Bharat Heavy Electricals",
+        "THERMAX.NS": "Thermax", "CUMMINSIND.NS": "Cummins India",
+        "GRINFRA.NS": "G R Infraprojects", "KEC.NS": "KEC International",
+        "APLAPOLLO.NS": "APL Apollo Tubes", "POLYCAB.NS": "Polycab India",
+        "KEI.NS": "KEI Industries", "VOLTAS.NS": "Voltas",
+        "BLUESTARCO.NS": "Blue Star", "CROMPTON.NS": "Crompton Greaves Consumer",
+        "KAJARIACER.NS": "Kajaria Ceramics", "CENTURYPLY.NS": "Century Plyboards",
+        "WHIRLPOOL.NS": "Whirlpool of India", "BATAINDIA.NS": "Bata India",
+        "PAGEIND.NS": "Page Industries", "RELAXO.NS": "Relaxo Footwears",
+        "RAYMOND.NS": "Raymond", "TATACOMM.NS": "Tata Communications",
+        "IDEA.NS": "Vodafone Idea", "INDUSTOWER.NS": "Indus Towers",
+        "IRCTC.NS": "IRCTC", "SAIL.NS": "Steel Authority of India",
+        "NMDC.NS": "NMDC Limited", "JINDALSTEL.NS": "Jindal Steel & Power",
+        "AARTIDRUGS.NS": "Aarti Drugs", "JSWINFRA.NS": "JSW Infrastructure",
+        "CONCOR.NS": "Container Corp of India", "MARICO.NS": "Marico",
+        "GODREJCP.NS": "Godrej Consumer Products", "COLPAL.NS": "Colgate-Palmolive India",
+        "EMAMILTD.NS": "Emami", "VBL.NS": "Varun Beverages",
+        "UNITDSPR.NS": "United Spirits (Diageo)", "JUBLFOOD.NS": "Jubilant FoodWorks",
+        "DEVYANI.NS": "Devyani International", "SAPPHIRE.NS": "Sapphire Foods",
+        "LICI.NS": "Life Insurance Corp", "GICRE.NS": "General Insurance Corp",
+        "ICICIGI.NS": "ICICI Lombard General", "STARHEALTH.NS": "Star Health Insurance",
+        "NIACL.NS": "New India Assurance", "MOTHERSON.NS": "Samvardhana Motherson",
+        "BALKRISIND.NS": "Balkrishna Industries", "MRF.NS": "MRF Limited",
+        "EXIDEIND.NS": "Exide Industries", "ARE&M.NS": "Amara Raja Energy",
+        "ASHOKLEY.NS": "Ashok Leyland", "TVSMOTOR.NS": "TVS Motor Company",
+        "ESCORTS.NS": "Escorts Kubota", "CEATLTD.NS": "CEAT Tyres",
+        "TEJASNET.NS": "Tejas Networks", "RAILTEL.NS": "RailTel Corp",
+        "HFCL.NS": "HFCL Limited", "LODHA.NS": "Macrotech Developers (Lodha)",
+        "SUNTV.NS": "Sun TV Network", "PVRINOX.NS": "PVR INOX",
+        "ZEEL.NS": "Zee Entertainment", "NESCO.NS": "Nesco",
+        "HONAUT.NS": "Honeywell Automation India", "PGHH.NS": "Procter & Gamble Health",
+        "ASTRAL.NS": "Astral Limited", "CAMS.NS": "Computer Age Management",
+        "ANGELONE.NS": "Angel One", "BSE.NS": "BSE Limited",
+        "MCX.NS": "Multi Commodity Exchange", "CDSL.NS": "Central Depository Services",
+        "INDIGO.NS": "InterGlobe Aviation (IndiGo)", "GMRAIRPORT.NS": "GMR Airports Infra",
+        "AIAENG.NS": "AIA Engineering", "IEX.NS": "Indian Energy Exchange",
+        "TATATECH.NS": "Tata Technologies", "JIOFIN.NS": "Jio Financial Services",
+        "KAYNES.NS": "Kaynes Technology", "DIXON.NS": "Dixon Technologies",
+        "OFSS.NS": "Oracle Financial Services", "CGPOWER.NS": "CG Power & Industrial",
+        "SUZLON.NS": "Suzlon Energy", "GRSE.NS": "Garden Reach Shipbuilders",
+        "RVNL.NS": "Rail Vikas Nigam", "IRCON.NS": "Ircon International",
+        "NBCC.NS": "NBCC India",
+    }
+    
     try:
         if not os.path.exists(UNIVERSE_PATH):
             return []
         
         df = pd.read_csv(UNIVERSE_PATH)
-        # Ensure Symbol column exists
         if "Symbol" not in df.columns:
             return []
+        
+        sector_map = {}
+        if "Sector" in df.columns:
+            sector_map = dict(zip(df["Symbol"], df["Sector"]))
             
         tickers = []
         for _, row in df.iterrows():
             sym = row["Symbol"]
             if pd.isna(sym): continue
             
-            # Simple cleanup
             clean_sym = str(sym).strip()
-            # Try to create a nice label (requires fundamental name which we might not have in CSV)
-            # For now, just return the symbol. The Frontend can pretty it up if needed, or we fetch names later.
-            # Actually, user wants "Actual Name". 
-            # We don't have names in universe.csv, only symbols. 
-            # We can't fetch 50 names from Yahoo in real-time.
-            # We will return just the symbol for now, but formatted nicely.
+            short = clean_sym.replace(".NS", "").replace(".BO", "")
+            name = NAMES.get(clean_sym, short)
+            sector = sector_map.get(clean_sym, "")
             
             tickers.append({
                 "value": clean_sym,
-                "label": clean_sym.replace(".NS", "")
+                "label": short,
+                "name": name,
+                "sector": sector,
             })
             
         return tickers

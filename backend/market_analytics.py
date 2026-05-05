@@ -356,8 +356,7 @@ def get_advanced_market_monitor(engine: Engine) -> Dict:
             prev_price = float(df["close"].iloc[-2]) if len(df) > 1 else last_price
             ret_1d = (last_price / prev_price) - 1
             
-            ma_50 = float(df["close"].rolling(50).mean().iloc[-1]) if len(df) >= 50 else last_price
-            ma_200 = float(df["close"].rolling(200).mean().iloc[-1]) if len(df) >= 200 else last_price
+            ma_50 = float(df["close"].rolling(50, min_periods=50).mean().iloc[-1]) if len(df) >= 50 else last_price
             
             high_52w = float(df["high"].max())
             dist_high = (last_price / high_52w) - 1
@@ -368,7 +367,6 @@ def get_advanced_market_monitor(engine: Engine) -> Dict:
                 "price": round(last_price, 2),
                 "change_1d": round(ret_1d * 100, 2),
                 "vs_50dma": round(((last_price / ma_50) - 1) * 100, 2),
-                "vs_200dma": round(((last_price / ma_200) - 1) * 100, 2),
                 "dist_52w_high": round(dist_high * 100, 2)
             })
 
@@ -376,14 +374,14 @@ def get_advanced_market_monitor(engine: Engine) -> Dict:
         breadth_query = text("""
             SELECT date, symbol, close, volume
             FROM price_daily
-            WHERE date >= current_date - INTERVAL '250 days'
+            WHERE date >= current_date - INTERVAL '90 days'
             ORDER BY date ASC
         """)
         with engine.connect() as conn:
             all_df = pd.read_sql(breadth_query, conn)
         
-        breadth_stats = {"above_20": 0, "above_50": 0, "above_200": 0, "total": 0,
-                         "pct_above_20": 0, "pct_above_50": 0, "pct_above_200": 0}
+        breadth_stats = {"above_20": 0, "above_50": 0, "total": 0,
+                         "pct_above_20": 0, "pct_above_50": 0}
         advancers, decliners = 0, 0
         momentum_breadth = {"pct_positive_30d": 0, "pct_top_decile": 0}
         sector_results = []
@@ -406,9 +404,8 @@ def get_advanced_market_monitor(engine: Engine) -> Dict:
                     valid = current.dropna().index
                     breadth_stats["total"] = len(valid)
                     
-                    ma20 = price_pivot.rolling(20).mean().iloc[-1]
-                    ma50 = price_pivot.rolling(50).mean().iloc[-1]
-                    ma200 = price_pivot.rolling(200).mean().iloc[-1]
+                    ma20 = price_pivot.rolling(20, min_periods=20).mean().iloc[-1]
+                    ma50 = price_pivot.rolling(50, min_periods=50).mean().iloc[-1]
                     
                     # Per-stock returns for sector rotation
                     ret_1d_all = {}
@@ -423,7 +420,6 @@ def get_advanced_market_monitor(engine: Engine) -> Dict:
                             elif p < pp: decliners += 1
                         if pd.notna(ma20.get(s)) and p > ma20[s]: breadth_stats["above_20"] += 1
                         if pd.notna(ma50.get(s)) and p > ma50[s]: breadth_stats["above_50"] += 1
-                        if pd.notna(ma200.get(s)) and p > ma200[s]: breadth_stats["above_200"] += 1
                         
                         # 1D return
                         ret_1d_all[s] = ((p / pp) - 1) if pp > 0 else 0
@@ -442,7 +438,7 @@ def get_advanced_market_monitor(engine: Engine) -> Dict:
                     
                     total = breadth_stats["total"]
                     if total > 0:
-                        for k in ["above_20", "above_50", "above_200"]:
+                        for k in ["above_20", "above_50"]:
                             breadth_stats[f"pct_{k}"] = round(breadth_stats[k] / total * 100, 1)
                     
                     # ── Momentum Breadth (real) ──
