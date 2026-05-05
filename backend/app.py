@@ -47,7 +47,7 @@ from backtest_logic import run_backtest_momentum
 from market_analytics import get_market_summary, get_market_breadth, get_leaders_laggards, get_advanced_market_monitor
 from security_analytics import get_security_overview, get_security_performance
 from screener_analytics import get_momentum_screen, get_low_vol_screen, get_value_screen, get_multi_factor_screen
-from research_analytics import do_backtest
+from research_analytics import do_backtest, run_multi_simulation, run_heatmap
 from portfolio_analytics import analyze_portfolio_request
 
 # 1. Environment & Dependencies
@@ -185,6 +185,20 @@ class SweepRequest(BaseModel):
     top_n: int = 10
     start: str = "2023-01-01"
     end: str = "2023-12-31"
+
+class MultiBacktestRequest(BaseModel):
+    strategies: List[dict]
+    start: str = "2024-01-01"
+    end: str = "2025-01-01"
+    rebalance: str = "monthly"
+
+class HeatmapRequest(BaseModel):
+    factor: str = "momentum"
+    lookbacks: List[int] = [30, 60, 90]
+    top_ns: List[int] = [5, 10, 20]
+    start: str = "2024-01-01"
+    end: str = "2025-01-01"
+    rebalance: str = "monthly"
 
 class PortfolioRequest(BaseModel):
     symbols: List[str]
@@ -807,6 +821,38 @@ def run_research_sweep(req: SweepRequest):
         
         finish_run(run_id, "success")
         return {"results": results}
+    except Exception as e:
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/research/multi")
+def run_research_multi(req: MultiBacktestRequest):
+    """
+    Run multiple strategies on the same date range for comparison.
+    """
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+    run_id = start_run("research_multi")
+    try:
+        result = run_multi_simulation(engine, req.strategies, req.start, req.end, req.rebalance)
+        finish_run(run_id, "success")
+        return result
+    except Exception as e:
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/research/heatmap")
+def run_research_heatmap(req: HeatmapRequest):
+    """
+    Run parameter grid (lookback × top_n) for heatmap visualization.
+    """
+    if not engine:
+        raise HTTPException(status_code=503, detail="DB unavailable")
+    run_id = start_run("research_heatmap")
+    try:
+        result = run_heatmap(engine, req.factor, req.lookbacks, req.top_ns, req.start, req.end, req.rebalance)
+        finish_run(run_id, "success")
+        return result
     except Exception as e:
         finish_run(run_id, "failed", str(e))
         raise HTTPException(status_code=500, detail=str(e))

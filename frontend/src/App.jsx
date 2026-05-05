@@ -186,7 +186,7 @@ function App() {
                     <h1 className="text-3xl font-bold tracking-tight text-white">
                         College OpenBB India
                     </h1>
-                    <p className="text-zinc-400 text-sm mt-1 font-medium">Quantitative Momentum Screener & Backtester</p>
+                    <p className="text-zinc-400 text-sm mt-1 font-medium">Quantitative Momentum Screener &amp; Backtester</p>
                 </div>
 
                 {/* Navigation Tabs */}
