@@ -3,6 +3,8 @@ import { Activity, Play, Plus, X, RefreshCw, TrendingUp, Shield, DollarSign } fr
 import Plot from 'react-plotly.js';
 
 const API = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY } : {};
 const FACTORS = [
     { id: 'momentum', label: 'Momentum', icon: TrendingUp },
     { id: 'low-vol', label: 'Low Vol', icon: Shield },
@@ -30,7 +32,7 @@ const ResearchLab = () => {
     const runAll = async () => {
         setLoading(true); setError(null); setResults(null);
         try {
-            const res = await fetch(`${API}/research/multi`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategies, ...dateRange, rebalance: 'monthly' }) });
+            const res = await fetch(`${API}/research/multi`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify({ strategies, ...dateRange, rebalance: 'monthly' }) });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Failed');
             setResults(data);
@@ -41,7 +43,7 @@ const ResearchLab = () => {
     const runHeatmap = async () => {
         setHeatLoading(true); setHeatmapData(null);
         try {
-            const res = await fetch(`${API}/research/heatmap`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ factor: heatFactor, lookbacks: [30, 60, 90, 120], top_ns: [5, 10, 15, 20], ...dateRange, rebalance: 'monthly' }) });
+            const res = await fetch(`${API}/research/heatmap`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify({ factor: heatFactor, lookbacks: [30, 60, 90, 120], top_ns: [5, 10, 15, 20], ...dateRange, rebalance: 'monthly' }) });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Failed');
             setHeatmapData(data);

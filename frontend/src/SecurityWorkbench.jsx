@@ -5,6 +5,8 @@ import AnalyticsGrid from './components/AnalyticsGrid';
 import useDerivedSignals from './hooks/useDerivedSignals';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY } : {};
 
 function SecurityWorkbench({ symbol, onSymbolChange }) {
     const [overview, setOverview] = useState(null);
@@ -36,7 +38,7 @@ function SecurityWorkbench({ symbol, onSymbolChange }) {
 
     // Fetch Ticker List on Mount
     useEffect(() => {
-        fetch(`${API_BASE}/market/tickers`)
+        fetch(`${API_BASE}/market/tickers`, { headers: AUTH_HEADERS })
             .then(res => res.json())
             .then(data => setTickerList(data))
             .catch(err => console.error('Failed to load ticker list', err));
@@ -58,8 +60,8 @@ function SecurityWorkbench({ symbol, onSymbolChange }) {
             setError(null);
             try {
                 const [overRes, perfRes] = await Promise.all([
-                    fetch(`${API_BASE}/security/overview/${symbol}`),
-                    fetch(`${API_BASE}/security/performance/${symbol}`),
+                    fetch(`${API_BASE}/security/overview/${symbol}`, { headers: AUTH_HEADERS }),
+                    fetch(`${API_BASE}/security/performance/${symbol}`, { headers: AUTH_HEADERS }),
                 ]);
 
                 if (!overRes.ok || !perfRes.ok) throw new Error('Failed to fetch security data');

@@ -250,7 +250,7 @@ def get_leaders_laggards(engine: Engine) -> Dict:
         
         with engine.connect() as conn:
              # Fetch enough to get last 2 distinct dates
-             df = pd.read_sql("SELECT date, symbol, close FROM price_daily WHERE date >= current_date - INTERVAL '5 days'", conn)
+             df = pd.read_sql(text("SELECT date, symbol, close FROM price_daily WHERE date >= current_date - INTERVAL '5 days'"), conn)
              
         if df.empty:
              return {"as_of": "", "gainers": [], "losers": []}

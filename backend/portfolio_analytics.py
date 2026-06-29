@@ -2,7 +2,7 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, bindparam
 from datetime import datetime, timedelta
 import logging
 
@@ -76,17 +76,16 @@ class PortfolioEngine:
         
         query_start = pd.to_datetime(start_date) - timedelta(days=10) # buffer for returns
         
-        sym_list = "', '".join(all_symbols)
-        query = text(f"""
+        query = text("""
             SELECT date, symbol, close 
             FROM price_daily 
-            WHERE symbol IN ('{sym_list}') 
+            WHERE symbol IN :symbols
             AND date >= :start AND date <= :end
             ORDER BY date ASC
-        """)
+        """).bindparams(bindparam("symbols", expanding=True))
         
         with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"start": query_start, "end": end_date})
+            df = pd.read_sql(query, conn, params={"symbols": all_symbols, "start": query_start, "end": end_date})
             
         if df.empty:
             return pd.DataFrame()

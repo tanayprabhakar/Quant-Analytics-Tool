@@ -7,6 +7,8 @@ import {
 import Plot from 'react-plotly.js';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY } : {};
 
 const PortfolioAnalytics = () => {
     // State
@@ -54,7 +56,7 @@ const PortfolioAnalytics = () => {
         try {
             const res = await fetch(`${API_BASE}/portfolio/analyze`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
                 body: JSON.stringify(payload)
             });
             const data = await res.json();

@@ -231,30 +231,40 @@ def get_security_overview(symbol: str, engine: Engine) -> Dict:
             elif len(stock_prices) == 1:
                 last_close = stock_prices.iloc[-1]
 
+            import math
+            def safe_float(val):
+                try:
+                    f = float(val)
+                    if math.isnan(f) or math.isinf(f):
+                        return 0.0
+                    return f
+                except (ValueError, TypeError):
+                    return 0.0
+
             return {
                 "symbol": symbol,
                 "as_of": datetime.now().strftime("%d-%m-%Y"),
                 "header": {
                     "name": fundamentals.get("name", symbol),
                     "sector": fundamentals.get("sector", "N/A"),
-                    "market_cap": fundamentals.get("market_cap", 0),
-                    "last_close": round(float(last_close), 2),
-                    "return_1d": round(float(ret_1d * 100), 2)
+                    "market_cap": safe_float(fundamentals.get("market_cap", 0)),
+                    "last_close": round(safe_float(last_close), 2),
+                    "return_1d": round(safe_float(ret_1d) * 100, 2)
                 },
                 "fundamentals": {
-                    "market_cap": fundamentals.get("market_cap", 0),
-                    "pe_ratio": fundamentals.get("pe_ratio", 0),
-                    "eps": fundamentals.get("eps", 0)
+                    "market_cap": safe_float(fundamentals.get("market_cap", 0)),
+                    "pe_ratio": safe_float(fundamentals.get("pe_ratio", 0)),
+                    "eps": safe_float(fundamentals.get("eps", 0))
                 },
                 "risk": {
-                    "beta": round(float(beta), 2),
-                    "volatility_30d": round(float(vol_30d * 100), 2),
-                    "max_drawdown_1y": round(float(max_dd * 100), 2)
+                    "beta": round(safe_float(beta), 2),
+                    "volatility_30d": round(safe_float(vol_30d) * 100, 2),
+                    "max_drawdown_1y": round(safe_float(max_dd) * 100, 2)
                 },
                 "factors": {
-                    "momentum_30d": round(float(mom_30), 4),
-                    "momentum_90d": round(float(mom_90), 4),
-                    "momentum_percentile": round(float(rank_90), 1), # Using 90d as primary rank
+                    "momentum_30d": round(safe_float(mom_30), 4),
+                    "momentum_90d": round(safe_float(mom_90), 4),
+                    "momentum_percentile": round(safe_float(rank_90), 1),
                     "trend": trend
                 }
             }

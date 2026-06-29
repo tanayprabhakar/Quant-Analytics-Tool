@@ -25,22 +25,25 @@ Test Commands:
 """
 
 import os
+import re
 import time
 import logging
 import threading
 import uuid
 import json
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 import pandas as pd
 import numpy as np
-import numpy as np
 import yfinance as yf
-from fastapi import FastAPI, HTTPException, Query, Path
+from fastapi import FastAPI, HTTPException, Query, Path, Depends, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 from sqlalchemy import create_engine, text
 
 from backtest_logic import run_backtest_momentum
@@ -56,6 +59,12 @@ load_dotenv()
 CACHE_TTL_SEC = int(os.getenv("CACHE_TTL_SEC", 120))
 UNIVERSE_PATH = os.getenv("UNIVERSE_PATH", "./universe.csv")
 DATABASE_URL = os.getenv("DATABASE_URL")
+API_KEY = os.getenv("API_KEY", "")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+ENV = os.getenv("ENV", "development")
+
+# Symbol validation regex
+SYMBOL_REGEX = re.compile(r'^[\^]?[A-Za-z0-9\-&\.]{1,30}$')
 
 # 2. Logging Configuration
 logging.basicConfig(
@@ -70,21 +79,31 @@ if not DATABASE_URL:
     engine = None
 else:
     try:
-        engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+        engine = create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=3,
+            max_overflow=5,
+            pool_timeout=30,
+            pool_recycle=300,
+        )
         logger.info("Database engine initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize database engine: {e}")
         engine = None
 
 # 4. Cache Implementation
+MAX_CACHE_SIZE = 500
+
 class TTLCache:
     """
-    Simple in-memory TTL cache with thread-safe operations.
+    Simple in-memory TTL cache with thread-safe operations and bounded size.
     For production, replace with an external cache like Redis (e.g., Upstash).
     """
-    def __init__(self):
+    def __init__(self, max_size: int = MAX_CACHE_SIZE):
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._max_size = max_size
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
@@ -102,6 +121,10 @@ class TTLCache:
 
     def set(self, key: str, value: Any, ttl: int):
         with self._lock:
+            # Evict oldest entry if at capacity
+            if len(self._cache) >= self._max_size and key not in self._cache:
+                oldest_key = min(self._cache, key=lambda k: self._cache[k]["expire_at"])
+                del self._cache[oldest_key]
             self._cache[key] = {
                 "value": value,
                 "expire_at": time.time() + ttl
@@ -111,16 +134,85 @@ class TTLCache:
 cache = TTLCache()
 
 # 5. App Setup
-app = FastAPI(title="College OpenBB India API")
+app = FastAPI(
+    title="College OpenBB India API",
+    docs_url=None if ENV == "production" else "/docs",
+    redoc_url=None if ENV == "production" else "/redoc",
+    openapi_url=None if ENV == "production" else "/openapi.json",
+)
+
+# ── Security Headers Middleware ──
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+        response.headers["Cache-Control"] = "no-store"
+        if ENV == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            response.headers["Content-Security-Policy"] = "default-src 'self'"
+        return response
+
+# ── API Key Authentication Middleware ──
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth for health check and docs
+        exempt_paths = {"/health", "/docs", "/redoc", "/openapi.json"}
+        if request.url.path in exempt_paths:
+            return await call_next(request)
+        # If no API_KEY configured, allow all (development mode)
+        if not API_KEY:
+            return await call_next(request)
+        provided_key = request.headers.get("X-API-Key", "")
+        if provided_key != API_KEY:
+            return JSONResponse(status_code=403, content={"detail": "Invalid or missing API key"})
+        return await call_next(request)
+
+# ── Rate Limiting Middleware ──
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, calls_per_minute: int = 60):
+        super().__init__(app)
+        self.calls_per_minute = calls_per_minute
+        self._requests: Dict[str, list] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        with self._lock:
+            self._requests[client_ip] = [t for t in self._requests[client_ip] if now - t < 60]
+            if len(self._requests[client_ip]) >= self.calls_per_minute:
+                return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded. Try again later."})
+            self._requests[client_ip].append(now)
+        return await call_next(request)
+
+# Register middleware (order matters: last added = first executed)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(APIKeyMiddleware)
+app.add_middleware(RateLimitMiddleware, calls_per_minute=60)
 
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
+
+# ── Symbol Validation Dependency ──
+def validate_symbol(symbol: str = Path(..., description="Stock symbol, e.g., RELIANCE.NS")) -> str:
+    if not SYMBOL_REGEX.match(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol format")
+    return symbol
+
+# ── Global Exception Handler ──
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 # 6. Pydantic Models for Documentation
 class HealthResponse(BaseModel):
@@ -173,8 +265,8 @@ class ScreenerResponse(BaseModel):
 
 class BacktestRequest(BaseModel):
     factor: str
-    lookback_days: int = 90
-    top_n: int = 10
+    lookback_days: int = Field(90, ge=5, le=365)
+    top_n: int = Field(10, ge=1, le=100)
     rebalance: str = "monthly"
     start: str = "2023-01-01"
     end: str = "2023-12-31"
@@ -182,15 +274,30 @@ class BacktestRequest(BaseModel):
 class SweepRequest(BaseModel):
     factor: str
     lookbacks: List[int]
-    top_n: int = 10
+    top_n: int = Field(10, ge=1, le=100)
     start: str = "2023-01-01"
     end: str = "2023-12-31"
+
+    @validator("lookbacks")
+    def validate_lookbacks(cls, v):
+        if len(v) > 10:
+            raise ValueError("Maximum 10 lookback values allowed")
+        for lb in v:
+            if lb < 5 or lb > 365:
+                raise ValueError(f"Lookback {lb} out of range [5, 365]")
+        return v
 
 class MultiBacktestRequest(BaseModel):
     strategies: List[dict]
     start: str = "2024-01-01"
     end: str = "2025-01-01"
     rebalance: str = "monthly"
+
+    @validator("strategies")
+    def validate_strategies(cls, v):
+        if len(v) > 4:
+            raise ValueError("Maximum 4 strategies allowed")
+        return v
 
 class HeatmapRequest(BaseModel):
     factor: str = "momentum"
@@ -200,12 +307,40 @@ class HeatmapRequest(BaseModel):
     end: str = "2025-01-01"
     rebalance: str = "monthly"
 
+    @validator("lookbacks")
+    def validate_lookbacks(cls, v):
+        if len(v) > 10:
+            raise ValueError("Maximum 10 lookback values")
+        return v
+
+    @validator("top_ns")
+    def validate_top_ns(cls, v):
+        if len(v) > 10:
+            raise ValueError("Maximum 10 top_n values")
+        return v
+
 class PortfolioRequest(BaseModel):
     symbols: List[str]
     weights: List[float]
     start: str = "2023-01-01"
     end: str = "2023-12-31"
     benchmark: str = "^NSEI"
+
+    @validator("symbols")
+    def validate_symbols(cls, v):
+        if len(v) > 50:
+            raise ValueError("Maximum 50 symbols allowed")
+        pattern = re.compile(r'^[\^]?[A-Za-z0-9\-&\.]{1,30}$')
+        for s in v:
+            if not pattern.match(s):
+                raise ValueError(f"Invalid symbol format: {s}")
+        return v
+
+    @validator("weights")
+    def validate_weights(cls, v):
+        if len(v) > 50:
+            raise ValueError("Maximum 50 weights allowed")
+        return v
 
 # 7. Helper Functions (Persistence)
 
@@ -389,7 +524,7 @@ def health_check():
 
 @app.get("/india/history/{symbol}", response_model=List[HistoryPoint])
 def get_history(
-    symbol: str = Path(..., description="Stock symbol, e.g., RELIANCE.NS"),
+    symbol: str = Depends(validate_symbol),
     period: str = Query("1y", description="Data period to download"),
     interval: str = Query("1d", description="Data interval")
 ):
@@ -472,10 +607,10 @@ def get_history(
         raise
     except Exception as e:
         logger.error(f"Error fetching history for {symbol}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"internal error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/india/fundamentals/{symbol}", response_model=FundamentalsResponse)
-def get_fundamentals(symbol: str = Path(..., description="Stock symbol")):
+def get_fundamentals(symbol: str = Depends(validate_symbol)):
     """
     Fetch fundamental data for a given symbol.
     """
@@ -512,12 +647,12 @@ def get_fundamentals(symbol: str = Path(..., description="Stock symbol")):
         raise
     except Exception as e:
         logger.error(f"Error fetching fundamentals for {symbol}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"internal error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/india/factors/momentum", response_model=MomentumResponse)
 def get_momentum(
-    lookback_days: int = Query(90, description="Lookback period in days"),
-    top_n: int = Query(10, description="Number of top stocks to return")
+    lookback_days: int = Query(90, ge=5, le=365, description="Lookback period in days"),
+    top_n: int = Query(10, ge=1, le=100, description="Number of top stocks to return")
 ):
     """
     Calculate momentum for stocks in the universe.
@@ -649,12 +784,12 @@ def get_momentum(
         err_msg = str(e)
         logger.error(f"Error in momentum endpoint: {e}", exc_info=True)
         finish_run(run_id, "failed", err_msg)
-        raise HTTPException(status_code=500, detail=f"internal error: {err_msg}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/india/backtest/momentum")
 def backtest_momentum(
-    lookback_days: int = Query(90, description="Lookback window for momentum"),
-    top_n: int = Query(10, description="Number of top stocks to select"),
+    lookback_days: int = Query(90, ge=5, le=365, description="Lookback window for momentum"),
+    top_n: int = Query(10, ge=1, le=100, description="Number of top stocks to select"),
     start_date: Optional[str] = Query("2021-01-01", description="Backtest start date YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="Backtest end date YYYY-MM-DD")
 ):
@@ -687,10 +822,9 @@ def backtest_momentum(
         raise HTTPException(status_code=400, detail=err_msg)
         
     except Exception as e:
-        err_msg = str(e)
         logger.error(f"Backtest internal error: {e}", exc_info=True)
-        finish_run(run_id, "failed", err_msg)
-        raise HTTPException(status_code=500, detail=f"Backtest error: {err_msg}")
+        finish_run(run_id, "failed", str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/screeners/multi")
@@ -729,8 +863,8 @@ def get_multi_screener():
 @app.get("/screeners/{screener_type}", response_model=ScreenerResponse)
 def get_screener(
     screener_type: str = Path(..., description="Type: momentum, low-vol, value"),
-    lookback_days: int = Query(30, description="Lookback days (for momentum)"),
-    top_n: int = Query(20, description="Top N results")
+    lookback_days: int = Query(30, ge=5, le=365, description="Lookback days (for momentum)"),
+    top_n: int = Query(20, ge=1, le=100, description="Top N results")
 ):
     """
     Get stocks matching specific quantitative criteria.
@@ -765,7 +899,7 @@ def get_screener(
     except Exception as e:
         logger.error(f"Screener failed: {e}")
         finish_run(run_id, "failed", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/research/backtest")
 def run_research_backtest(req: BacktestRequest):
@@ -791,7 +925,7 @@ def run_research_backtest(req: BacktestRequest):
         return result
     except Exception as e:
         finish_run(run_id, "failed", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/research/sweep")
 def run_research_sweep(req: SweepRequest):
@@ -823,7 +957,7 @@ def run_research_sweep(req: SweepRequest):
         return {"results": results}
     except Exception as e:
         finish_run(run_id, "failed", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/research/multi")
 def run_research_multi(req: MultiBacktestRequest):
@@ -839,7 +973,7 @@ def run_research_multi(req: MultiBacktestRequest):
         return result
     except Exception as e:
         finish_run(run_id, "failed", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/research/heatmap")
 def run_research_heatmap(req: HeatmapRequest):
@@ -855,7 +989,7 @@ def run_research_heatmap(req: HeatmapRequest):
         return result
     except Exception as e:
         finish_run(run_id, "failed", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/portfolio/analyze")
 def run_portfolio_analysis(req: PortfolioRequest):
@@ -879,7 +1013,7 @@ def run_portfolio_analysis(req: PortfolioRequest):
         return result
     except Exception as e:
         finish_run(run_id, "failed", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # 9. Market Monitor Endpoints
 
@@ -934,7 +1068,7 @@ def get_advanced_monitor():
         return result
     except Exception as e:
         logger.error(f"Advanced Monitor Failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # 10. Security Workbench Endpoints
 
@@ -1095,7 +1229,7 @@ def get_tickers():
         return []
 
 @app.get("/security/overview/{symbol}")
-def security_overview(symbol: str):
+def security_overview(symbol: str = Depends(validate_symbol)):
     """
     Get comprehensive security overview (Fundamentals, Risk, Factors).
     """
@@ -1104,7 +1238,7 @@ def security_overview(symbol: str):
     return get_security_overview(symbol, engine)
 
 @app.get("/security/performance/{symbol}")
-def security_performance(symbol: str):
+def security_performance(symbol: str = Depends(validate_symbol)):
     """
     Get price history and overlays for charting.
     """
@@ -1114,4 +1248,5 @@ def security_performance(symbol: str):
 
 
 if __name__ == "__main__":
-    test_health_endpoint()
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)

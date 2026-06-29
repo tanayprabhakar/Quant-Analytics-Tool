@@ -8,6 +8,8 @@ import PortfolioAnalytics from './PortfolioAnalytics';
 
 // 1. API_BASE Resolution
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY } : {};
 
 function App() {
     // State for selected symbol (default RELIANCE.NS)
@@ -34,7 +36,7 @@ function App() {
         setChartLoading(true);
         setChartError(null);
         try {
-            const response = await fetch(`${API_BASE}/india/history/${symbol}?period=6mo`);
+            const response = await fetch(`${API_BASE}/india/history/${symbol}?period=6mo`, { headers: AUTH_HEADERS });
             if (!response.ok) throw new Error(response.status === 404 ? 'No data found' : 'Backend error');
             const data = await response.json();
             setChartData(data);
@@ -51,7 +53,7 @@ function App() {
         setMomentumLoading(true);
         setMomentumError(null);
         try {
-            const response = await fetch(`${API_BASE}/india/factors/momentum?lookback_days=90&top_n=10`);
+            const response = await fetch(`${API_BASE}/india/factors/momentum?lookback_days=90&top_n=10`, { headers: AUTH_HEADERS });
             if (!response.ok) throw new Error('Failed to fetch momentum data');
             const data = await response.json();
             setMomentumData(data.results || []);
@@ -69,7 +71,7 @@ function App() {
         setBacktestResult(null);
         setShowBacktestModal(true);
         try {
-            const response = await fetch(`${API_BASE}/india/backtest/momentum?lookback_days=90&top_n=10`);
+            const response = await fetch(`${API_BASE}/india/backtest/momentum?lookback_days=90&top_n=10`, { headers: AUTH_HEADERS });
             if (!response.ok) throw new Error('Backtest failed');
             const data = await response.json();
             setBacktestResult(data);

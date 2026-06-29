@@ -56,6 +56,9 @@ function StockChart({ performanceData, symbol }) {
             const d = raw[i];
             const time = d.date; // YYYY-MM-DD string
 
+            // Skip invalid price records (lightweight-charts crashes on null)
+            if (d.open == null || d.high == null || d.low == null || d.close == null) continue;
+
             candles.push({
                 time,
                 open: d.open,

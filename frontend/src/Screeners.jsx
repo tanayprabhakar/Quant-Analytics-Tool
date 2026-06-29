@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Filter, ArrowUpDown, ArrowUp, ArrowDown, BarChart3, X, RefreshCw, AlertCircle, Columns } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY } : {};
 
 /* ── Signal / Label color maps ── */
 const SIG = { Strong: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', dot: 'bg-emerald-400' }, Watch: { bg: 'bg-amber-500/15', text: 'text-amber-400', dot: 'bg-amber-400' }, Weak: { bg: 'bg-zinc-700/30', text: 'text-zinc-500', dot: 'bg-zinc-500' } };
@@ -129,7 +131,7 @@ const Screeners = ({ onSymbolClick }) => {
     const fetchData = useCallback(async () => {
         setLoading(true); setError(null);
         try {
-            const res = await fetch(`${API_BASE}/screeners/multi`);
+            const res = await fetch(`${API_BASE}/screeners/multi`, { headers: AUTH_HEADERS });
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
             const json = await res.json();
             if (json.error) throw new Error(json.error);

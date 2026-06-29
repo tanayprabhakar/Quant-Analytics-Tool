@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Activity, Zap, BarChart3, Globe, AlertCircle, TrendingUp } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY } : {};
 
 /* ── Helpers ── */
 const regimeColor = (regime) => {
@@ -45,7 +47,7 @@ function MarketMonitor({ onSymbolClick }) {
     const fetchData = async () => {
         setError(null);
         try {
-            const res = await fetch(`${API_BASE}/market/advanced_monitor`);
+            const res = await fetch(`${API_BASE}/market/advanced_monitor`, { headers: AUTH_HEADERS });
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
             const json = await res.json();
             if (json.error) throw new Error(json.error);
