@@ -1,5 +1,5 @@
 -- 1. Price Daily Table
-create table price_daily (
+create table if not exists price_daily (
     symbol text not null,
     date date not null,
     open numeric,
@@ -13,7 +13,7 @@ create table price_daily (
 );
 
 -- 2. Factor Momentum Table
-create table factor_momentum (
+create table if not exists factor_momentum (
     symbol text not null,
     as_of_date date not null,
     lookback_days int not null,
@@ -23,7 +23,7 @@ create table factor_momentum (
 );
 
 -- 3. Runs Table
-create table runs (
+create table if not exists runs (
     run_id uuid default gen_random_uuid() primary key,
     run_type text not null,
     started_at timestamp with time zone default now(),

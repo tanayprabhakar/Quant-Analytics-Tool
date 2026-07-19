@@ -21,27 +21,25 @@ def run_migration():
     try:
         engine = create_engine(DATABASE_URL)
         
-        migration_file = "migration_fundamentals.sql"
-        if not os.path.exists(migration_file):
-             logger.error(f"Migration file {migration_file} not found")
-             sys.exit(1)
-             
-        with open(migration_file, "r") as f:
-            sql_script = f.read()
+        migration_files = ["schema.sql", "migration_fundamentals.sql"]
+        for migration_file in migration_files:
+            if not os.path.exists(migration_file):
+                 logger.error(f"Migration file {migration_file} not found")
+                 sys.exit(1)
+                 
+            with open(migration_file, "r") as f:
+                sql_script = f.read()
 
-        logger.info(f"Applying migration from {migration_file}...")
-        
-        # Split by ; to handle multiple statements if needed, though execute typically handles this or use text()
-        # With sqlalchemy text(), we usually execute statement by statement or block depending on driver.
-        # Simple split approach for safety:
-        statements = sql_script.split(";")
-        
-        with engine.begin() as conn:
-            for stmt in statements:
-                if stmt.strip():
-                    conn.execute(text(stmt))
-                    
-        logger.info("Migration applied successfully!")
+            logger.info(f"Applying migration from {migration_file}...")
+            
+            statements = sql_script.split(";")
+            
+            with engine.begin() as conn:
+                for stmt in statements:
+                    if stmt.strip():
+                        conn.execute(text(stmt))
+                        
+            logger.info(f"Migration {migration_file} applied successfully!")
         
         # Verify
         with engine.connect() as conn:
