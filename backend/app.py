@@ -57,7 +57,7 @@ from portfolio_analytics import analyze_portfolio_request
 load_dotenv()
 
 CACHE_TTL_SEC = int(os.getenv("CACHE_TTL_SEC", 120))
-UNIVERSE_PATH = os.getenv("UNIVERSE_PATH", "./universe.csv")
+UNIVERSE_PATH = os.getenv("UNIVERSE_PATH", "../universe.csv")
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY", "")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
